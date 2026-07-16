@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Executors — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="panel">
+      <div class="panel-header">
+        <span>Agent Executor Settings</span>
+        <button class="secondary" onclick="saveExecutorSettings()">Save</button>
+      </div>
+      <div class="panel-body padded">
+        <div class="panels" style="gap:1rem">
+          <div class="branch-form">
+            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Forge — Developer Agent</h3>
+            <div class="form-row"><label>Executor</label><select id="forge-executor" style="width:100%"></select></div>
+            <div class="meta" id="forge-executor-hint">Default: Cursor</div>
+          </div>
+          <div class="branch-form">
+            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Sentinel — Reviewer Agent</h3>
+            <div class="form-row"><label>Executor</label><select id="sentinel-executor" style="width:100%"></select></div>
+            <div class="meta" id="sentinel-executor-hint">Default: Cursor</div>
+          </div>
+        </div>
+        <div class="description-box" id="cursor-bridge-info" style="margin-top:0.75rem;font-size:0.82rem"></div>
+      </div>
+    </div>
+  </main>
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Agent Executors', 'Forge & Sentinel: Cursor, OpenAI, Claude', 'settings-agents');
+    const API = Dashboard.API;
+
+    async function loadExecutorSettings() {
+      const res = await fetch(`${API}/api/v1/settings/agent-executors`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed');
+      const opts = (data.options || []).map(o => `<option value="${o.id}">${Dashboard.escapeHtml(o.label)}</option>`).join('');
+      document.getElementById('forge-executor').innerHTML = opts;
+      document.getElementById('sentinel-executor').innerHTML = opts;
+      document.getElementById('forge-executor').value = data.forge_executor || 'cursor';
+      document.getElementById('sentinel-executor').value = data.sentinel_executor || 'cursor';
+      document.getElementById('forge-executor-hint').textContent = `Active: ${data.forge_executor}`;
+      document.getElementById('sentinel-executor-hint').textContent = `Active: ${data.sentinel_executor}`;
+      const bridgeInfo = document.getElementById('cursor-bridge-info');
+      if (data.forge_executor === 'cursor' || data.sentinel_executor === 'cursor') {
+        bridgeInfo.innerHTML = `<strong>Cursor mode</strong> — Bridge: ${Dashboard.escapeHtml(data.cursor_bridge_url || '')} · Repo: ${Dashboard.escapeHtml(data.cursor_repo_path || '')}<br>Run: <code>python run_cursor_bridge.py</code>`;
+      } else {
+        bridgeInfo.textContent = 'Cursor bridge not required.';
+      }
+    }
+
+    async function saveExecutorSettings() {
+      const res = await fetch(`${API}/api/v1/settings/agent-executors`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          forge_executor: document.getElementById('forge-executor').value,
+          sentinel_executor: document.getElementById('sentinel-executor').value,
+          updated_by: 'dashboard',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Save failed');
+      alert('Saved');
+      loadExecutorSettings();
+    }
+
+    loadExecutorSettings();
+    Dashboard.connectWebSocket();
+  </script>
+</body>
+</html>

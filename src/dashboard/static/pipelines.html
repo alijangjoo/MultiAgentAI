@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipelines — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="panel">
+      <div class="panel-header">
+        <span>GitLab Pipelines</span>
+        <div class="toolbar">
+          <button class="secondary" type="button" onclick="openWorkflowGuide()">راهنما — Release Workflow</button>
+          <select id="pipe-ref"><option value="">All refs</option></select>
+          <select id="pipe-status">
+            <option value="">All statuses</option>
+            <option value="running">running</option>
+            <option value="pending">pending</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+            <option value="manual">manual</option>
+          </select>
+          <button class="secondary" onclick="loadPipelines()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" id="pipelines-list"><div class="empty-state">Loading...</div></div>
+    </div>
+
+    <div class="panel" id="jobs-panel" style="display:none">
+      <div class="panel-header">
+        <span id="jobs-panel-title">Pipeline Jobs</span>
+        <button class="secondary" onclick="closeJobsPanel()">Close</button>
+      </div>
+      <div class="panel-body padded" id="jobs-panel-hint" style="display:none;border-bottom:1px solid var(--border);font-size:0.85rem;color:var(--muted)"></div>
+      <div class="panel-body" id="jobs-list"></div>
+    </div>
+  </main>
+
+  <div class="modal-overlay" id="play-modal" onclick="if(event.target===this)closePlayModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <strong id="play-modal-title">Run Job</strong>
+          <div class="meta" id="play-modal-meta"></div>
+        </div>
+        <button class="modal-close" onclick="closePlayModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="play-bump-hint" class="workflow-note" style="display:none">
+          Job <strong>bump-version</strong>: متغیر <code>ENV</code> را برای محیط هدف انتخاب کنید.
+          پس از Run/Retry، CI ادامه می‌یابد و در Argo CD باید Sync انجام دهید.
+        </div>
+        <div id="env-preset-row" style="display:none">
+          <label class="meta" style="display:block;margin-bottom:0.35rem">ENV — target environment</label>
+          <div class="env-presets" id="env-presets">
+            <button type="button" class="secondary env-btn active" data-env="dev" onclick="setEnvPreset('dev')">dev</button>
+            <button type="button" class="secondary env-btn" data-env="stg" onclick="setEnvPreset('stg')">stg</button>
+            <button type="button" class="secondary env-btn" data-env="prd" onclick="setEnvPreset('prd')">prd</button>
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:0.75rem">
+          <label>CI/CD Variables</label>
+        </div>
+        <div id="var-rows">
+          <div class="var-row">
+            <div class="form-row" style="margin:0"><label>Key</label><input type="text" class="var-key" value="ENV" readonly style="opacity:0.85" /></div>
+            <div class="form-row" style="margin:0"><label>Value</label><input type="text" class="var-value" id="env-value-input" value="dev" /></div>
+          </div>
+        </div>
+        <button class="secondary" onclick="addVarRow()" style="margin-top:0.5rem">+ Add extra variable</button>
+        <div class="modal-actions">
+          <button id="play-modal-submit" onclick="submitJobAction()">Run Job</button>
+          <button class="secondary" onclick="closePlayModal()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="workflow-guide-modal" onclick="if(event.target===this)closeWorkflowGuide()">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <strong>Release Workflow</strong>
+          <div class="meta">feat → Bump Version → CI → Argo CD Sync</div>
+        </div>
+        <button type="button" class="modal-close" onclick="closeWorkflowGuide()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="workflow-note">
+          پس از توسعه در Forge، commit با پیام <code>feat:</code> روی branch feature بزنید.
+          Pipeline در GitLab اجرا می‌شود؛ job دستی <strong>bump-version</strong> را با متغیر
+          <code>ENV</code> (dev / stg / prd) Run کنید. CI ادامه می‌یابد و نسخه جدید به Argo CD می‌رود —
+          در Argo CD اپ را <strong>Sync</strong> کنید.
+        </div>
+        <ol class="workflow-steps">
+          <li><strong>Commit با feat:</strong> پیام commit باید با <code>feat:</code> شروع شود (مثلاً <code>feat(ven-100): create contract api</code>) — Forge این فرمت را رعایت می‌کند.</li>
+          <li><strong>Pipeline:</strong> پس از push، pipeline مربوط به branch در لیست زیر ظاهر می‌شود (مراحل build/test).</li>
+          <li><strong>Bump version:</strong> job دستی <code>Bump Version</code> را باز کنید → <code>ENV=dev</code> یا <code>stg</code> یا <code>prd</code> → Run Job.</li>
+          <li><strong>CI خودکار:</strong> پس از bump، مراحل بعدی pipeline (deploy artifact و …) خودکار اجرا می‌شوند.</li>
+          <li><strong>Argo CD Sync:</strong> در Argo CD محیط مربوطه (dev/stg/prd) را باز کنید و Application را Sync کنید تا نسخه جدید live شود.</li>
+        </ol>
+        <div class="modal-actions">
+          <button type="button" class="secondary" onclick="closeWorkflowGuide()">بستن</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader(
+      'app-header',
+      'Pipelines',
+      'feat: commit → bump-version (ENV) → CI → Argo CD Sync',
+      'pipelines'
+    );
+    const API = Dashboard.API;
+    const BUMP_JOB_PATTERN = /bump[\s_-]*version/i;
+    let selectedPipelineId = null;
+    let selectedPipelineRef = '';
+    let selectedPipelineIid = 0;
+    let playJobId = null;
+    let playJobIsBump = false;
+    let jobActionMode = 'play';
+
+    function isBumpJob(name) {
+      return BUMP_JOB_PATTERN.test(name || '');
+    }
+
+    function openWorkflowGuide() {
+      document.getElementById('workflow-guide-modal').classList.add('open');
+    }
+
+    function closeWorkflowGuide() {
+      document.getElementById('workflow-guide-modal').classList.remove('open');
+    }
+
+    function setEnvPreset(env) {
+      document.getElementById('env-value-input').value = env;
+      document.querySelectorAll('.env-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.env === env);
+      });
+    }
+
+    async function loadRefFilter() {
+      try {
+        const res = await fetch(`${API}/api/v1/settings/gitlab-branches?limit=100`);
+        const data = await res.json();
+        const sel = document.getElementById('pipe-ref');
+        sel.innerHTML = '<option value="">All refs</option>' +
+          (data.branches || []).map(b => `<option value="${b}">${Dashboard.escapeHtml(b)}</option>`).join('');
+      } catch (_) {}
+    }
+
+    async function loadPipelines() {
+      const ref = document.getElementById('pipe-ref').value;
+      const status = document.getElementById('pipe-status').value;
+      const params = new URLSearchParams({ limit: '30' });
+      if (ref) params.set('ref', ref);
+      if (status) params.set('status', status);
+      const el = document.getElementById('pipelines-list');
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/pipelines?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        if (!data.pipelines.length) {
+          el.innerHTML = '<div class="empty-state">No pipelines — push a <code>feat:</code> commit first</div>';
+          return;
+        }
+        el.innerHTML = data.pipelines.map(p => `
+          <div class="pipe-item" onclick="loadJobs(${p.id}, '${Dashboard.escapeHtml(p.ref)}', ${p.iid})">
+            <span class="badge ${Dashboard.statusBadgeClass(p.status)}">${Dashboard.escapeHtml(p.status)}</span>
+            <strong style="margin-left:0.35rem">#${p.iid}</strong>
+            <span class="meta" style="margin-left:0.5rem">${Dashboard.escapeHtml(p.ref)} · ${p.sha ? p.sha.slice(0,8) : ''}</span>
+            <div class="meta">${p.created_at ? new Date(p.created_at).toLocaleString() : ''}</div>
+          </div>`).join('');
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadJobs(pipelineId, ref, iid) {
+      selectedPipelineId = pipelineId;
+      selectedPipelineRef = ref;
+      selectedPipelineIid = iid;
+      document.getElementById('jobs-panel').style.display = 'block';
+      document.getElementById('jobs-panel-title').textContent = `Pipeline #${iid} (${ref}) — Jobs`;
+      const hint = document.getElementById('jobs-panel-hint');
+      hint.style.display = 'block';
+      hint.innerHTML = 'Jobهای <span class="badge pending">manual</span> → Run · jobهای <span class="badge failed">failed</span>/<span class="badge done">success</span> → Retry';
+      const el = document.getElementById('jobs-list');
+      el.innerHTML = '<div class="empty-state">Loading jobs...</div>';
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/pipelines/${pipelineId}/jobs`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        el.innerHTML = data.jobs.map(j => {
+          const manual = j.status === 'manual';
+          const bump = isBumpJob(j.name);
+          const retryable = !!j.retryable;
+          const safeName = Dashboard.escapeHtml(j.name).replace(/'/g, "\\'");
+          const actions = [];
+          if (manual) {
+            actions.push(`<button class="${bump ? '' : 'secondary'}" onclick="openJobModal(${j.id}, '${safeName}', ${bump}, 'play')">${bump ? 'Bump version' : 'Run Job'}</button>`);
+          }
+          if (retryable) {
+            actions.push(`<button class="secondary" onclick="${bump ? `openJobModal(${j.id}, '${safeName}', true, 'retry')` : `retryJob(${j.id}, '${safeName}', false)`}">Retry</button>`);
+          }
+          const link = j.web_url && j.web_url !== '#'
+            ? `<a href="${Dashboard.escapeHtml(j.web_url)}" target="_blank" rel="noopener" class="meta" style="margin-left:0.5rem">GitLab ↗</a>`
+            : '';
+          return `
+            <div class="job-item ${bump ? 'job-bump' : ''}" style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem">
+              <div>
+                <span class="badge ${Dashboard.statusBadgeClass(j.status)}">${Dashboard.escapeHtml(j.status)}</span>
+                <strong style="margin-left:0.35rem">${Dashboard.escapeHtml(j.name)}</strong>
+                ${bump ? '<span class="badge pending" style="margin-left:0.35rem">bump</span>' : ''}
+                <div class="meta">${Dashboard.escapeHtml(j.stage)} · id ${j.id}${link}${bump ? ' · set ENV for Run/Retry' : ''}</div>
+              </div>
+              <div style="display:flex;gap:0.35rem;flex-wrap:wrap">${actions.join('')}</div>
+            </div>`;
+        }).join('') || '<div class="empty-state">No jobs</div>';
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function closeJobsPanel() {
+      document.getElementById('jobs-panel').style.display = 'none';
+      document.getElementById('jobs-panel-hint').style.display = 'none';
+      selectedPipelineId = null;
+    }
+
+    function resetVarRows(forBump) {
+      const container = document.getElementById('var-rows');
+      container.innerHTML = `
+        <div class="var-row">
+          <div class="form-row" style="margin:0"><label>Key</label>
+            <input type="text" class="var-key" value="ENV" ${forBump ? 'readonly style="opacity:0.85"' : ''} /></div>
+          <div class="form-row" style="margin:0"><label>Value</label>
+            <input type="text" class="var-value" id="env-value-input" value="dev" /></div>
+          ${forBump ? '' : '<button class="secondary" onclick="removeVarRow(this)" style="padding:0.45rem 0.6rem">×</button>'}
+        </div>`;
+    }
+
+    function openJobModal(jobId, jobName, isBump, mode) {
+      playJobId = jobId;
+      playJobIsBump = !!isBump;
+      jobActionMode = mode === 'retry' ? 'retry' : 'play';
+      const isRetry = jobActionMode === 'retry';
+      document.getElementById('play-modal-title').textContent = isRetry
+        ? (isBump ? `Retry bump — ${jobName}` : `Retry: ${jobName}`)
+        : (isBump ? `Bump version — ${jobName}` : `Run: ${jobName}`);
+      document.getElementById('play-modal-meta').textContent = `Job ID ${jobId} · Pipeline #${selectedPipelineIid} (${selectedPipelineRef})`;
+      document.getElementById('play-bump-hint').style.display = isBump ? 'block' : 'none';
+      document.getElementById('env-preset-row').style.display = isBump ? 'block' : 'none';
+      document.getElementById('play-modal-submit').textContent = isRetry ? 'Retry Job' : 'Run Job';
+      resetVarRows(isBump);
+      if (isBump) setEnvPreset('dev');
+      document.getElementById('play-modal').classList.add('open');
+    }
+
+    function openPlayModal(jobId, jobName, isBump) {
+      openJobModal(jobId, jobName, isBump, 'play');
+    }
+
+    function closePlayModal() {
+      document.getElementById('play-modal').classList.remove('open');
+      playJobId = null;
+      playJobIsBump = false;
+      jobActionMode = 'play';
+    }
+
+    function addVarRow() {
+      const row = document.createElement('div');
+      row.className = 'var-row';
+      row.innerHTML = `
+        <div class="form-row" style="margin:0"><label>Key</label><input type="text" class="var-key" placeholder="KEY" /></div>
+        <div class="form-row" style="margin:0"><label>Value</label><input type="text" class="var-value" placeholder="value" /></div>
+        <button class="secondary" onclick="removeVarRow(this)" style="padding:0.45rem 0.6rem">×</button>`;
+      document.getElementById('var-rows').appendChild(row);
+    }
+
+    function removeVarRow(btn) {
+      const rows = document.querySelectorAll('#var-rows .var-row');
+      if (rows.length <= 1) return;
+      btn.closest('.var-row').remove();
+    }
+
+    async function retryJob(jobId, jobName, isBump) {
+      if (isBump) {
+        openJobModal(jobId, jobName, true, 'retry');
+        return;
+      }
+      if (!confirm(`Retry job "${jobName}" (id ${jobId})?`)) return;
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/jobs/${jobId}/retry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variables: [] }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Retry failed');
+        alert(data.message || 'Job retried');
+        if (selectedPipelineId) loadJobs(selectedPipelineId, selectedPipelineRef, selectedPipelineIid);
+        loadPipelines();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function submitJobAction() {
+      if (!playJobId) return;
+      const variables = [];
+      document.querySelectorAll('#var-rows .var-row').forEach(row => {
+        const key = row.querySelector('.var-key').value.trim();
+        const value = row.querySelector('.var-value').value.trim();
+        if (key) variables.push({ key, value });
+      });
+      if (playJobIsBump && !variables.some(v => v.key === 'ENV' && ['dev', 'stg', 'prd'].includes(v.value))) {
+        if (!confirm('ENV is not dev/stg/prd. Continue anyway?')) return;
+      }
+      const isRetry = jobActionMode === 'retry';
+      const endpoint = isRetry ? 'retry' : 'play';
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/jobs/${playJobId}/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variables }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `${isRetry ? 'Retry' : 'Play'} failed`);
+        const env = variables.find(v => v.key === 'ENV')?.value || '';
+        let msg = data.message || (isRetry ? 'Job retried' : 'Job started');
+        if (playJobIsBump) {
+          msg += `\n\nCI will continue automatically.\nNext: open Argo CD (${env || 'target env'}) and Sync the application.`;
+        }
+        alert(msg);
+        closePlayModal();
+        if (selectedPipelineId) loadJobs(selectedPipelineId, selectedPipelineRef, selectedPipelineIid);
+        loadPipelines();
+      } catch (err) { alert(err.message); }
+    }
+
+    loadRefFilter().then(loadPipelines);
+    Dashboard.connectWebSocket();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Develop — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    /* Page-specific overrides only — shared nav uses dashboard.css */
+    .task-item, .run-item, .hitl-item {
+      padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s;
+    }
+    .task-item:hover, .run-item:hover, .hitl-item:hover { background: var(--surface2); }
+    .task-item:last-child, .run-item:last-child, .hitl-item:last-child { border-bottom: none; }
+    .task-key { color: var(--accent); font-weight: 600; font-size: 0.85rem; }
+    .task-summary { font-weight: 500; margin-top: 0.25rem; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+      font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+    }
+    .badge.todo { background: rgba(139,156,179,0.2); color: var(--muted); }
+    .badge.progress { background: rgba(59,130,246,0.2); color: var(--accent); }
+    .badge.done { background: rgba(34,197,94,0.2); color: var(--success); }
+    .badge.running { background: rgba(59,130,246,0.2); color: var(--accent); }
+    .badge.waiting_hitl { background: rgba(245,158,11,0.2); color: var(--warning); }
+    .badge.completed { background: rgba(34,197,94,0.2); color: var(--success); }
+    .badge.failed { background: rgba(239,68,68,0.2); color: var(--danger); }
+    .badge.pending { background: rgba(168,85,247,0.2); color: var(--purple); }
+    .meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.35rem; }
+    .toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    input, select, textarea {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.85rem;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    button {
+      background: var(--accent); color: white; border: none;
+      padding: 0.55rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500;
+    }
+    button:hover { opacity: 0.92; }
+    button.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+    button.success { background: var(--success); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .agents-legend {
+      display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.5rem; padding: 1rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    }
+    .agent-chip { padding: 0.35rem 0.75rem; border-radius: 20px; font-size: 0.8rem; border: 1px solid var(--border); }
+    #event-log { font-family: "Cascadia Code", monospace; font-size: 0.78rem; padding: 1rem; max-height: 160px; overflow-y: auto; color: var(--muted); }
+    #event-log .time { color: var(--accent); }
+
+    /* Modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+      z-index: 1000; align-items: center; justify-content: center; padding: 1rem;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+    }
+    .modal-header h2 { font-size: 1.1rem; line-height: 1.4; }
+    .modal-close { background: none; border: none; color: var(--muted); font-size: 1.5rem; cursor: pointer; padding: 0; line-height: 1; }
+    .modal-body { padding: 1.5rem; }
+    .modal-section { margin-bottom: 1.25rem; }
+    .modal-section h3 { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; letter-spacing: 0.05em; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .detail-item label { display: block; font-size: 0.75rem; color: var(--muted); }
+    .detail-item span { font-size: 0.9rem; }
+    .description-box {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 1rem; font-size: 0.88rem; line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto;
+    }
+    .branch-form {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem;
+    }
+    .form-row { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.85rem; }
+    .form-row label { font-size: 0.8rem; color: var(--muted); }
+    .branch-preview {
+      font-family: "Cascadia Code", monospace; font-size: 0.85rem; color: var(--success);
+      background: rgba(34,197,94,0.1); padding: 0.6rem 0.8rem; border-radius: 6px; word-break: break-all;
+    }
+    .modal-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .empty-state { padding: 2rem; text-align: center; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main>
+    <div class="agents-legend">
+      <span class="agent-chip">Atlas - Task Analyst</span>
+      <span class="agent-chip">Forge - Developer (Develop only)</span>
+      <span class="agent-chip">Sentinel - Code Reviewer (MR Review)</span>
+      <span class="agent-chip">Meridian - Product Manager</span>
+      <span class="agent-chip">Scribe - Documentation</span>
+      <span class="agent-chip">Sage - Knowledge Agent (ChromaDB)</span>
+      <span class="agent-chip">Aegis - Incident Analyst</span>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Total Runs</div><div class="value" id="stat-total">0</div></div>
+      <div class="stat-card"><div class="label">Running</div><div class="value" id="stat-running">0</div></div>
+      <div class="stat-card"><div class="label">HITL</div><div class="value" id="stat-hitl">0</div></div>
+      <div class="stat-card"><div class="label">Jira Tasks</div><div class="value" id="stat-jira">0</div></div>
+      <div class="stat-card"><div class="label">Open MRs</div><div class="value" id="stat-mrs">0</div></div>
+      <div class="stat-card"><div class="label">Knowledge Docs</div><div class="value" id="stat-knowledge">0</div></div>
+    </div>
+
+    <!-- Jira Tasks Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Jira Tasks</span>
+        <div class="toolbar">
+          <input type="text" id="jira-project" placeholder="Project key" style="width:90px" />
+          <select id="jira-status-filter">
+            <option value="">All statuses</option>
+            <option value="To Do">To Do</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Done">Done</option>
+          </select>
+          <button class="secondary" onclick="loadJiraTasks()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" id="jira-tasks-list">
+        <div class="empty-state">Loading Jira tasks...</div>
+      </div>
+    </div>
+
+    <!-- GitLab Merge Requests Panel -->
+    <div class="panel" id="sentinel">
+      <div class="panel-header">
+        <span>GitLab Merge Requests</span>
+        <div class="toolbar">
+          <select id="mr-state-filter">
+            <option value="opened">Opened</option>
+            <option value="merged">Merged</option>
+            <option value="closed">Closed</option>
+            <option value="all">All</option>
+          </select>
+          <button class="secondary" onclick="loadMergeRequests()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" id="mr-list">
+        <div class="empty-state">Loading merge requests...</div>
+      </div>
+    </div>
+
+    <!-- Sage Knowledge RAG Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Sage Knowledge Base (ChromaDB RAG)</span>
+        <div class="toolbar">
+          <a href="/dashboard/knowledge" style="color:#10b981;font-size:0.85rem;text-decoration:none">Open Full Monitor →</a>
+          <button class="secondary" onclick="loadKnowledgeStats()">Refresh</button>
+        </div>
+      </div>
+      <div style="padding:1rem 1.25rem">
+        <div class="detail-grid" id="knowledge-stats-grid" style="margin-bottom:1rem"></div>
+
+        <div class="panels" style="margin-bottom:1rem">
+          <div class="branch-form">
+            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Query Knowledge (Sage RAG)</h3>
+            <div class="form-row">
+              <label>Question</label>
+              <input type="text" id="knowledge-query" placeholder="How to implement CQRS command handler?" />
+            </div>
+            <div class="form-row">
+              <label>Collections (optional)</label>
+              <select id="knowledge-query-collections" multiple style="min-height:70px">
+                <option value="code_patterns">Code Patterns</option>
+                <option value="solutions">Solutions</option>
+                <option value="error_patterns">Error Patterns</option>
+                <option value="best_practices">Best Practices</option>
+                <option value="historical_context">Historical Context</option>
+                <option value="api_reference">API Reference</option>
+                <option value="architecture_spec">Architecture Specs (Dizi)</option>
+                <option value="adr">ADR</option>
+              </select>
+            </div>
+            <button onclick="queryKnowledge()">Ask Sage</button>
+            <div class="description-box" id="knowledge-answer" style="margin-top:0.75rem;display:none"></div>
+          </div>
+
+          <div class="branch-form">
+            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Ingest Document</h3>
+            <div class="form-row">
+              <label>Collection</label>
+              <select id="knowledge-ingest-collection">
+                <option value="code_patterns">Code Patterns Repository</option>
+                <option value="solutions">Solution Database</option>
+                <option value="error_patterns">Error Patterns</option>
+                <option value="best_practices">Best Practices</option>
+                <option value="historical_context">Historical Context</option>
+                <option value="api_reference">API Reference</option>
+                <option value="adr">ADR</option>
+              </select>
+            </div>
+            <div class="form-row"><label>Title</label><input type="text" id="knowledge-ingest-title" /></div>
+            <div class="form-row"><label>Content</label><textarea id="knowledge-ingest-content" rows="4"></textarea></div>
+            <div class="form-row"><label>Tags (comma separated)</label><input type="text" id="knowledge-ingest-tags" placeholder="cqrs,dotnet" /></div>
+            <div class="form-row"><label>Task Key (optional)</label><input type="text" id="knowledge-ingest-task" placeholder="VEN-100" /></div>
+            <button class="secondary" onclick="ingestKnowledge()">Add to Knowledge Base</button>
+          </div>
+        </div>
+
+        <h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin:0.75rem 0 0.5rem">Bulk Ingest (Dashboard Commands)</h3>
+        <div class="toolbar" style="margin-bottom:1rem">
+          <button class="secondary" onclick="ingestKnowledgeGitlab()">Ingest GitLab Source</button>
+          <button class="secondary" onclick="ingestKnowledgeConfluence()">Ingest Confluence</button>
+          <button class="secondary" onclick="ingestKnowledgeLocal()">Ingest Local Docs/ADR</button>
+        </div>
+
+        <h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:0.5rem">Documents</h3>
+        <div class="panel-body" id="knowledge-docs-list" style="max-height:240px;border:1px solid var(--border);border-radius:8px"></div>
+      </div>
+    </div>
+
+    <!-- Meridian Product Manager Panel -->
+    <div class="panel" id="meridian">
+      <div class="panel-header">
+        <span>Meridian Product Manager</span>
+        <span class="meta" id="meridian-session-label">New session</span>
+      </div>
+      <div style="padding:1rem 1.25rem">
+        <div class="form-row">
+          <label>Role</label>
+          <select id="meridian-role">
+            <option value="stakeholder">Stakeholder</option>
+            <option value="tech_lead">Tech Lead</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Requirements Chat</label>
+          <textarea id="meridian-message" rows="3" placeholder="Describe feature requirements or answer Meridian questions..."></textarea>
+        </div>
+        <div class="toolbar" style="margin-bottom:0.75rem">
+          <button onclick="meridianChat()">Send to Meridian</button>
+          <button class="secondary" onclick="meridianGeneratePRD()">Generate PRD</button>
+          <button class="success" onclick="meridianCreateJira()">Create Jira Task</button>
+        </div>
+        <div class="description-box" id="meridian-reply" style="max-height:180px;display:none"></div>
+        <div class="form-row" style="margin-top:0.75rem">
+          <label>Jira Summary (for Create Task)</label>
+          <input type="text" id="meridian-jira-summary" placeholder="Implement contract validation API" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Aegis Incident Panel -->
+    <div class="panel" id="aegis">
+      <div class="panel-header">
+        <span>Aegis Incident Response</span>
+        <button class="secondary" onclick="analyzeIncidents()">Analyze Disaster Channel</button>
+      </div>
+      <div class="panel-body" id="incident-report" style="padding:1rem 1.25rem;max-height:360px">
+        <div class="empty-state">Run incident analysis to see vendor-related reports</div>
+      </div>
+    </div>
+
+    <div class="panels">
+      <div class="panel">
+        <div class="panel-header">Recent Agent Runs</div>
+        <div class="panel-body" id="runs-list"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">HITL Checkpoints <span class="badge pending" id="hitl-count">0</span></div>
+        <div class="panel-body" id="hitl-list"></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-header">Event Log</div>
+      <div id="event-log"></div>
+    </div>
+  </main>
+
+  <!-- Task Detail Modal -->
+  <div class="modal-overlay" id="task-modal" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <div class="task-key" id="modal-key"></div>
+          <h2 id="modal-summary"></h2>
+        </div>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-section">
+          <div class="detail-grid">
+            <div class="detail-item"><label>Status</label><span id="modal-status"></span></div>
+            <div class="detail-item"><label>Type</label><span id="modal-type"></span></div>
+            <div class="detail-item"><label>Assignee</label><span id="modal-assignee"></span></div>
+            <div class="detail-item"><label>Priority</label><span id="modal-priority"></span></div>
+            <div class="detail-item"><label>Reporter</label><span id="modal-reporter"></span></div>
+            <div class="detail-item"><label>Updated</label><span id="modal-updated"></span></div>
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <h3>Description</h3>
+          <div class="description-box" id="modal-description"></div>
+        </div>
+
+        <div class="modal-section" id="modal-prd-section" style="display:none">
+          <h3>PRD Preview</h3>
+          <div class="description-box" id="modal-prd"></div>
+        </div>
+
+        <div class="modal-section">
+          <h3>Development Workflow</h3>
+          <div class="branch-form">
+            <div class="form-row">
+              <label>Short Description (slug)</label>
+              <input type="text" id="branch-short-desc" placeholder="AI suggests a short slug…" oninput="updateBranchPreview()" />
+              <div class="meta" id="branch-slug-hint" style="margin-top:0.25rem"></div>
+            </div>
+            <div class="form-row">
+              <label>Feature Source Branch</label>
+              <select id="branch-source"></select>
+            </div>
+            <div class="form-row">
+              <label>Environment</label>
+              <select id="deploy-environment" onchange="onEnvironmentChange()">
+                <option value="dev" selected>Development</option>
+                <option value="stage">Stage</option>
+                <option value="production">Production</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>MR Target Branch</label>
+              <select id="mr-target-branch"></select>
+            </div>
+            <div class="form-row">
+              <label>Branch Name Preview</label>
+              <div class="branch-preview" id="branch-preview">feature/...</div>
+            </div>
+            <div class="modal-actions">
+              <button class="success" onclick="startDevelopment()">Start Development (Forge)</button>
+              <button class="secondary" onclick="createBranch()">Create Branch Only</button>
+              <a id="modal-jira-link" href="#" target="_blank" style="color:var(--accent);font-size:0.85rem;align-self:center">Open in Jira</a>
+            </div>
+            <p class="meta" style="margin-top:0.5rem">Creates branch from source → reads task &amp; attachments → loads architecture specs → develops → opens MR to target branch.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MR Review Result Modal -->
+  <div class="modal-overlay" id="mr-review-modal" onclick="if(event.target===this)closeMrReviewModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <div class="task-key" id="mr-review-title"></div>
+          <h2 id="mr-review-summary"></h2>
+        </div>
+        <button class="modal-close" onclick="closeMrReviewModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="description-box" id="mr-review-result"></div>
+        <div class="modal-actions">
+          <a id="mr-review-link" href="#" target="_blank" class="secondary" style="padding:0.5rem 1rem;text-decoration:none;display:inline-block">Open in GitLab</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Develop', 'Jira · Forge · Sentinel · Meridian · Aegis', 'develop');
+    const API = Dashboard.API;
+    let ws;
+    let currentTask = null;
+    let sourceBranches = [];
+    let gitlabBranches = [];
+    let deploySettings = null;
+    let meridianSessionId = null;
+    let lastIncidentRunId = null;
+
+    function logEvent(msg) {
+      const el = document.getElementById('event-log');
+      const time = new Date().toLocaleTimeString();
+      el.innerHTML = `<div><span class="time">[${time}]</span> ${msg}</div>` + el.innerHTML;
+    }
+
+    function statusBadgeClass(status) {
+      const s = (status || '').toLowerCase();
+      if (s.includes('progress')) return 'progress';
+      if (s.includes('done') || s.includes('closed')) return 'done';
+      return 'todo';
+    }
+
+    async function loadJiraTasks() {
+      const project = document.getElementById('jira-project').value.trim();
+      const status = document.getElementById('jira-status-filter').value;
+      const params = new URLSearchParams();
+      if (project) params.set('project_key', project);
+      if (status) params.set('status', status);
+
+      const el = document.getElementById('jira-tasks-list');
+      el.innerHTML = '<div class="empty-state">Loading...</div>';
+
+      try {
+        const res = await fetch(`${API}/api/v1/jira/tasks?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to load tasks');
+
+        document.getElementById('stat-jira').textContent = data.count;
+        if (!data.tasks.length) {
+          el.innerHTML = '<div class="empty-state">No tasks found</div>';
+          return;
+        }
+
+        el.innerHTML = data.tasks.map(t => `
+          <div class="task-item" onclick="openTaskModal('${t.key}')">
+            <div class="task-key">${t.key}</div>
+            <div class="task-summary">${escapeHtml(t.summary)}</div>
+            <div class="meta">
+              <span class="badge ${statusBadgeClass(t.status)}">${t.status}</span>
+              ${t.issue_type} | ${t.assignee || 'Unassigned'} | ${t.priority || '-'}
+            </div>
+          </div>
+        `).join('');
+        logEvent(`Loaded ${data.count} Jira tasks (${data.project_key})`);
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
+        logEvent(`Jira load error: ${err.message}`);
+      }
+    }
+
+    async function openTaskModal(taskKey) {
+      try {
+        const [detailRes, branchesRes, gitlabRes] = await Promise.all([
+          fetch(`${API}/api/v1/jira/tasks/${taskKey}`),
+          fetch(`${API}/api/v1/jira/source-branches?limit=100`),
+          fetch(`${API}/api/v1/settings/gitlab-branches?limit=100`),
+        ]);
+        const detail = await detailRes.json();
+        const branchesData = await branchesRes.json();
+        const gitlabData = gitlabRes.ok ? await gitlabRes.json() : { branches: [] };
+        if (!detailRes.ok) throw new Error(detail.detail || 'Failed to load task');
+
+        currentTask = detail;
+        sourceBranches = branchesData.branches || [detail.default_source_branch];
+        gitlabBranches = gitlabData.branches || sourceBranches;
+
+        const cfgRes = await fetch(`${API}/api/v1/settings/deploy-branches`);
+        if (cfgRes.ok) deploySettings = await cfgRes.json();
+
+        document.getElementById('modal-key').textContent = detail.key;
+        document.getElementById('modal-summary').textContent = detail.summary;
+        document.getElementById('modal-status').textContent = detail.status;
+        document.getElementById('modal-type').textContent = detail.issue_type;
+        document.getElementById('modal-assignee').textContent = detail.assignee || 'Unassigned';
+        document.getElementById('modal-priority').textContent = detail.priority || '-';
+        document.getElementById('modal-reporter').textContent = detail.reporter || '-';
+        document.getElementById('modal-updated').textContent = detail.updated ? new Date(detail.updated).toLocaleString() : '-';
+        document.getElementById('modal-description').textContent = detail.description || 'No description';
+
+        const prdSection = document.getElementById('modal-prd-section');
+        if (detail.has_prd && detail.prd_preview) {
+          prdSection.style.display = 'block';
+          document.getElementById('modal-prd').textContent = detail.prd_preview;
+        } else {
+          prdSection.style.display = 'none';
+        }
+
+        document.getElementById('branch-short-desc').value = detail.suggested_short_description || '';
+        const sourceSelect = document.getElementById('branch-source');
+        sourceSelect.innerHTML = normalizeBranchOptions(sourceBranches, detail.default_source_branch)
+          .map(b => `<option value="${b}" ${b === detail.default_source_branch ? 'selected' : ''}>${escapeHtml(b)}</option>`)
+          .join('');
+
+        updateBranchPreview();
+        fetchAiBranchSlug(taskKey);
+
+        await populateMrTargetSelect();
+        onEnvironmentChange();
+
+        document.getElementById('modal-jira-link').href = detail.jira_url || '#';
+        document.getElementById('task-modal').classList.add('open');
+      } catch (err) {
+        logEvent(`Task detail error: ${err.message}`);
+        alert(err.message);
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('task-modal').classList.remove('open');
+      currentTask = null;
+    }
+
+    function slugifyClient(text) {
+      return (text || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().trim()
+        .replace(/[^\w\s-]/g, '')
+        .replace(/[\s_]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 40).replace(/-$/, '');
+    }
+
+    function updateBranchPreview() {
+      if (!currentTask) return;
+      const raw = document.getElementById('branch-short-desc').value.trim();
+      const preview = document.getElementById('branch-preview');
+      if (!raw) {
+        preview.textContent = 'feature/...';
+        return;
+      }
+      const slug = slugifyClient(raw);
+      preview.textContent = `feature/${currentTask.key.toLowerCase()}-${slug}`;
+    }
+
+    async function fetchAiBranchSlug(taskKey) {
+      const hint = document.getElementById('branch-slug-hint');
+      const input = document.getElementById('branch-short-desc');
+      hint.textContent = 'AI is suggesting a short slug…';
+      try {
+        const res = await fetch(`${API}/api/v1/jira/tasks/${taskKey}/branch/suggest`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Suggest failed');
+        input.value = data.short_description || data.branch_name?.split('/').pop() || '';
+        updateBranchPreview();
+        hint.textContent = 'Suggested by AI — edit if needed';
+      } catch (err) {
+        hint.textContent = 'Using fallback slug (AI unavailable)';
+        updateBranchPreview();
+      }
+    }
+
+    async function createBranch() {
+      if (!currentTask) return;
+      const shortDesc = document.getElementById('branch-short-desc').value.trim();
+      const sourceBranch = document.getElementById('branch-source').value;
+      if (!shortDesc) { alert('Enter a short description'); return; }
+
+      const btn = event.target;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/v1/jira/tasks/${currentTask.key}/branch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ short_description: shortDesc, source_branch: sourceBranch }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Branch creation failed');
+        logEvent(data.message);
+        alert(data.message);
+      } catch (err) {
+        logEvent(`Branch error: ${err.message}`);
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function startDevelopment() {
+      if (!currentTask) return;
+      const shortDesc = document.getElementById('branch-short-desc').value.trim();
+      if (!shortDesc) { alert('Enter a short description for the branch'); return; }
+
+      const environment = document.getElementById('deploy-environment').value;
+      const sourceBranch = document.getElementById('branch-source').value;
+      const targetBranch = document.getElementById('mr-target-branch').value;
+      const branchPreview = document.getElementById('branch-preview').textContent.trim();
+      let forgeExec = 'cursor';
+      try {
+        const execRes = await fetch(`${API}/api/v1/settings/agent-executors`);
+        const execData = await execRes.json();
+        if (execRes.ok) forgeExec = execData.forge_executor || 'cursor';
+      } catch (_) {}
+
+      if (!confirm(
+        `Start full develop workflow (${forgeExec})?\n\n` +
+        `Task: ${currentTask.key}\nBranch: ${branchPreview}\nFrom: ${sourceBranch}\nMR → ${targetBranch} (${environment})`
+      )) return;
+
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = 'Developing...';
+
+      try {
+        const res = await fetch(`${API}/api/v1/jira/tasks/${currentTask.key}/develop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            short_description: shortDesc,
+            branch_name: branchPreview.startsWith('feature/') ? branchPreview : null,
+            environment,
+            source_branch: sourceBranch,
+            target_branch: targetBranch,
+            create_mr: true,
+            subtask_index: 0,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Develop workflow failed');
+        logEvent(`Develop completed for ${currentTask.key}: ${data.run_id}`);
+        closeModal();
+        let msg = `Run ID: ${data.run_id}\nBranch: ${data.branch_name}\nFiles: ${(data.files_changed || []).join(', ') || 'via Cursor push'}`;
+        if (data.merge_request_url) msg += `\n\nMR: ${data.merge_request_url}`;
+        alert(msg);
+        refreshStats();
+        loadMergeRequests();
+      } catch (err) {
+        logEvent(`Develop error: ${err.message}`);
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Start Development (Forge)';
+      }
+    }
+
+    function onEnvironmentChange() {
+      if (!deploySettings) return;
+      const env = document.getElementById('deploy-environment').value;
+      const select = document.getElementById('mr-target-branch');
+      let target = deploySettings.dev_target_branch;
+      if (env === 'stage') target = deploySettings.stage_target_branch;
+      if (env === 'production') target = deploySettings.production_target_branch;
+      if (select.querySelector(`option[value="${target}"]`)) {
+        select.value = target;
+      }
+    }
+
+    function normalizeBranchOptions(branches, selected) {
+      const pinned = ['main', 'master', selected].filter(Boolean);
+      const seen = new Set();
+      const out = [];
+      for (const b of pinned) {
+        if (!seen.has(b)) { out.push(b); seen.add(b); }
+      }
+      for (const b of branches) {
+        if (!seen.has(b)) { out.push(b); seen.add(b); }
+      }
+      return out;
+    }
+
+    async function populateMrTargetSelect() {
+      const select = document.getElementById('mr-target-branch');
+      const branches = gitlabBranches.length ? gitlabBranches : sourceBranches;
+      const merged = normalizeBranchOptions(branches, deploySettings?.dev_target_branch);
+      select.innerHTML = merged.map(b => `<option value="${b}">${escapeHtml(b)}</option>`).join('');
+    }
+
+    function escapeHtml(text) {
+      return Dashboard.escapeHtml(text);
+    }
+
+    function connectWebSocket() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/dashboard`);
+      ws.onopen = () => {
+        document.getElementById('ws-status').className = 'status-dot connected';
+        document.getElementById('ws-label').textContent = 'Live';
+      };
+      ws.onclose = () => {
+        document.getElementById('ws-status').className = 'status-dot disconnected';
+        document.getElementById('ws-label').textContent = 'Disconnected';
+        setTimeout(connectWebSocket, 3000);
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'dashboard_update') {
+          renderRuns(data.runs);
+          renderHitl(data.pending_hitl);
+          updateStatsFromRuns(data.runs, data.pending_hitl);
+        }
+      };
+    }
+
+    function updateStatsFromRuns(runs, hitl) {
+      document.getElementById('stat-total').textContent = runs.length;
+      document.getElementById('stat-running').textContent = runs.filter(r => r.status === 'running').length;
+      document.getElementById('stat-hitl').textContent = runs.filter(r => r.status === 'waiting_hitl').length;
+      document.getElementById('hitl-count').textContent = `${hitl.length} pending`;
+    }
+
+    function renderRuns(runs) {
+      const el = document.getElementById('runs-list');
+      if (!runs.length) { el.innerHTML = '<div class="empty-state">No runs yet</div>'; return; }
+      el.innerHTML = runs.map(r => `
+        <div class="run-item" onclick="window.open('${API}/api/v1/runs/${r.id}','_blank')">
+          <span class="badge ${r.status}">${r.status}</span> <strong>${r.agent_name}</strong>
+          <div class="meta">${r.workflow_type} | ${new Date(r.created_at).toLocaleString()}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderHitl(checkpoints) {
+      const el = document.getElementById('hitl-list');
+      if (!checkpoints.length) { el.innerHTML = '<div class="empty-state">No pending checkpoints</div>'; return; }
+      el.innerHTML = checkpoints.map(cp => `
+        <div class="hitl-item">
+          <strong>${cp.checkpoint_name}</strong>
+          <div class="meta">${cp.description.slice(0, 80)}...</div>
+          <div style="margin-top:0.5rem;display:flex;gap:0.5rem">
+            <button onclick="approveHitl('${cp.id}')">Approve</button>
+            <button class="secondary" onclick="rejectHitl('${cp.id}')">Reject</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function refreshStats() {
+      await fetch(`${API}/api/v1/dashboard/stats`).then(r => r.json()).then(() => {});
+    }
+
+    async function approveHitl(id) {
+      await fetch(`${API}/api/v1/hitl/${id}/resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', resolved_by: 'tech-lead@company.local' }),
+      });
+      logEvent('HITL approved');
+    }
+
+    async function rejectHitl(id) {
+      await fetch(`${API}/api/v1/hitl/${id}/resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reject', resolved_by: 'tech-lead@company.local' }),
+      });
+      logEvent('HITL rejected');
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { closeModal(); closeMrReviewModal(); }
+    });
+
+    connectWebSocket();
+    loadJiraTasks();
+    loadMergeRequests();
+    loadKnowledgeStats();
+    loadKnowledgeDocs();
+
+    function mrStatusBadge(state) {
+      if (state === 'opened') return 'running';
+      if (state === 'merged') return 'completed';
+      return 'failed';
+    }
+
+    async function loadMergeRequests() {
+      const el = document.getElementById('mr-list');
+      const state = document.getElementById('mr-state-filter').value;
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests?state=${encodeURIComponent(state)}&limit=50`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to load MRs');
+        if (state === 'opened') document.getElementById('stat-mrs').textContent = data.count;
+        if (!data.merge_requests.length) {
+          el.innerHTML = '<div class="empty-state">No merge requests found</div>';
+          return;
+        }
+        el.innerHTML = data.merge_requests.map(mr => `
+          <div class="task-item">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem">
+              <div>
+                <span class="badge ${mrStatusBadge(mr.state)}">${mr.state}</span>
+                <strong>!${mr.iid}</strong> ${escapeHtml(mr.title)}
+              </div>
+              ${mr.state === 'opened' ? `<button onclick="reviewMergeRequest(${mr.iid}, ${JSON.stringify(mr.title)})">Review</button>` : ''}
+              ${mr.state === 'merged' ? `<button class="secondary" onclick="ingestMrKnowledge(${mr.iid})">Update Knowledge</button>` : ''}
+            </div>
+            <div class="meta">${escapeHtml(mr.source_branch)} → ${escapeHtml(mr.target_branch)}${mr.author ? ' | ' + escapeHtml(mr.author) : ''}</div>
+            <div class="meta"><a href="${mr.web_url}" target="_blank" style="color:var(--accent)">${mr.web_url}</a></div>
+          </div>
+        `).join('');
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`;
+        logEvent(`MR list error: ${err.message}`);
+      }
+    }
+
+    document.getElementById('mr-state-filter').addEventListener('change', loadMergeRequests);
+
+    async function reviewMergeRequest(mrIid, title) {
+      const sentinelExec = document.getElementById('sentinel-executor').value || 'cursor';
+      if (!confirm(`Start Sentinel review (${sentinelExec}) for MR !${mrIid}?`)) return;
+      logEvent(`Sentinel reviewing MR !${mrIid}...`);
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${mrIid}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewed_by: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+        showMrReviewResult(mrIid, title, data);
+        logEvent(`Sentinel review completed for MR !${mrIid}`);
+        refreshStats();
+      } catch (err) {
+        alert(`Review failed: ${err.message}`);
+        logEvent(`MR review error: ${err.message}`);
+      }
+    }
+
+    function showMrReviewResult(mrIid, title, data) {
+      const review = data.review || {};
+      const approved = review.approved ? '✅ Approved' : '❌ Changes Requested';
+      document.getElementById('mr-review-title').textContent = `MR !${mrIid}`;
+      document.getElementById('mr-review-summary').textContent = title;
+      document.getElementById('mr-review-result').innerHTML = `
+<strong>${approved}</strong>
+
+${escapeHtml(review.summary || 'No summary')}
+
+<strong>Findings:</strong>
+${(review.findings || []).map(f => '• ' + escapeHtml(f)).join('\n') || 'None'}
+
+<strong>Suggestions:</strong>
+${(review.suggestions || []).map(s => '• ' + escapeHtml(s)).join('\n') || 'None'}
+
+Run ID: ${data.run_id}
+      `;
+      const link = document.getElementById('mr-review-link');
+      link.href = data.merge_request_url || '#';
+      document.getElementById('mr-review-modal').classList.add('open');
+    }
+
+    function closeMrReviewModal() {
+      document.getElementById('mr-review-modal').classList.remove('open');
+    }
+
+    async function loadKnowledgeStats() {
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/stats`);
+        const stats = await res.json();
+        if (!res.ok) throw new Error(stats.detail || 'Failed');
+        document.getElementById('stat-knowledge').textContent = stats.total_documents;
+        const grid = document.getElementById('knowledge-stats-grid');
+        grid.innerHTML = Object.entries(stats.collections).map(([k, v]) =>
+          `<div class="detail-item"><label>${k.replace('_',' ')}</label><span>${v} chunks</span></div>`
+        ).join('') + `<div class="detail-item"><label>Total Docs</label><span>${stats.total_documents}</span></div>`;
+      } catch (err) { logEvent(`Knowledge stats error: ${err.message}`); }
+    }
+
+    async function loadKnowledgeDocs() {
+      const el = document.getElementById('knowledge-docs-list');
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/documents?limit=30`);
+        const docs = await res.json();
+        if (!docs.length) { el.innerHTML = '<div class="empty-state">No documents yet</div>'; return; }
+        el.innerHTML = docs.map(d => `
+          <div class="task-item">
+            <div><span class="badge todo">${d.collection}</span> <strong>${escapeHtml(d.title)}</strong></div>
+            <div class="meta">${escapeHtml(d.content_preview)}...</div>
+            <div style="margin-top:0.4rem">
+              <button class="secondary" style="padding:0.3rem 0.6rem;font-size:0.75rem" onclick="deleteKnowledgeDoc('${d.id}')">Delete</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) { el.innerHTML = `<div class="empty-state">${err.message}</div>`; }
+    }
+
+    async function queryKnowledge() {
+      const question = document.getElementById('knowledge-query').value.trim();
+      if (!question) return;
+      const select = document.getElementById('knowledge-query-collections');
+      const collections = Array.from(select.selectedOptions).map(o => o.value);
+      const body = { question, top_k: 5, synthesize: true };
+      if (collections.length) body.collections = collections;
+
+      const answerEl = document.getElementById('knowledge-answer');
+      answerEl.style.display = 'block';
+      answerEl.textContent = 'Sage is thinking...';
+
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/query`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Query failed');
+        answerEl.textContent = data.answer || JSON.stringify(data.results, null, 2);
+        logEvent(`Sage answered: ${question.slice(0, 50)}...`);
+      } catch (err) {
+        answerEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function ingestKnowledge() {
+      const collection = document.getElementById('knowledge-ingest-collection').value;
+      const title = document.getElementById('knowledge-ingest-title').value.trim();
+      const content = document.getElementById('knowledge-ingest-content').value.trim();
+      const tags = document.getElementById('knowledge-ingest-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+      const task_key = document.getElementById('knowledge-ingest-task').value.trim() || null;
+      if (!title || !content) { alert('Title and content required'); return; }
+
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/ingest`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection, title, content, tags, task_key }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Ingest failed');
+        logEvent(data.message);
+        document.getElementById('knowledge-ingest-title').value = '';
+        document.getElementById('knowledge-ingest-content').value = '';
+        loadKnowledgeStats();
+        loadKnowledgeDocs();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function deleteKnowledgeDoc(docId) {
+      if (!confirm('Delete this document from knowledge base?')) return;
+      await fetch(`${API}/api/v1/knowledge/documents/${docId}`, { method: 'DELETE' });
+      loadKnowledgeStats();
+      loadKnowledgeDocs();
+      logEvent(`Deleted knowledge doc ${docId}`);
+    }
+
+    async function ingestKnowledgeGitlab() {
+      if (!confirm('Ingest source files from GitLab into ChromaDB?')) return;
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/ingest/gitlab?limit=100`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        logEvent(data.message);
+        loadKnowledgeStats();
+        loadKnowledgeDocs();
+        alert(data.message);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function ingestKnowledgeConfluence() {
+      if (!confirm('Ingest Confluence pages into knowledge base?')) return;
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/ingest/confluence?query=API&limit=20`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        logEvent(data.message);
+        loadKnowledgeStats();
+        loadKnowledgeDocs();
+        alert(data.message);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function ingestKnowledgeLocal() {
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/ingest/local`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        logEvent(data.message);
+        loadKnowledgeStats();
+        loadKnowledgeDocs();
+        alert(data.message);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function meridianChat() {
+      const message = document.getElementById('meridian-message').value.trim();
+      if (!message) return;
+      const role = document.getElementById('meridian-role').value;
+      const replyEl = document.getElementById('meridian-reply');
+      replyEl.style.display = 'block';
+      replyEl.textContent = 'Meridian is thinking...';
+      try {
+        const res = await fetch(`${API}/api/v1/product-manager/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: meridianSessionId, message, role }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Chat failed');
+        meridianSessionId = data.session_id;
+        document.getElementById('meridian-session-label').textContent = `Session: ${meridianSessionId.slice(0, 8)}...`;
+        replyEl.textContent = data.reply;
+        document.getElementById('meridian-message').value = '';
+        logEvent('Meridian chat reply received');
+      } catch (err) {
+        replyEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function meridianGeneratePRD() {
+      if (!meridianSessionId) { alert('Start a chat session first'); return; }
+      try {
+        const res = await fetch(`${API}/api/v1/product-manager/prd`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: meridianSessionId, tech_lead: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'PRD failed');
+        const replyEl = document.getElementById('meridian-reply');
+        replyEl.style.display = 'block';
+        replyEl.textContent = data.prd_content;
+        logEvent(`PRD generated: ${data.run_id}`);
+        alert(data.message);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function meridianCreateJira() {
+      if (!meridianSessionId) { alert('Generate PRD first'); return; }
+      const summary = document.getElementById('meridian-jira-summary').value.trim();
+      if (!summary) { alert('Enter Jira summary'); return; }
+      try {
+        const res = await fetch(`${API}/api/v1/product-manager/jira/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: meridianSessionId, summary }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Jira create failed');
+        logEvent(data.message);
+        alert(`${data.message}\n${data.jira_url || data.jira_key}`);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function analyzeIncidents() {
+      const el = document.getElementById('incident-report');
+      el.innerHTML = '<div class="empty-state">Aegis analyzing Mattermost + Elastic (Dizi)...</div>';
+      try {
+        const res = await fetch(`${API}/api/v1/workflows/incident-analysis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notify_tech_lead: true }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Analysis failed');
+        lastIncidentRunId = data.run_id;
+        const report = data.report || {};
+        const vendorBadge = report.is_vendor_related
+          ? '<span class="badge failed">Vendor Related</span>'
+          : '<span class="badge todo">Not Vendor</span>';
+        el.innerHTML = `
+          <div>${vendorBadge} <span class="badge ${report.severity === 'critical' ? 'failed' : 'waiting_hitl'}">${report.severity}</span></div>
+          <h3 style="margin:0.5rem 0">${escapeHtml(report.title || '')}</h3>
+          <div class="description-box">${escapeHtml(report.summary || '')}</div>
+          <div class="meta" style="margin-top:0.5rem">Logs analyzed: ${report.logs_analyzed || 0}</div>
+          ${report.elastic_log_snippets && report.elastic_log_snippets.length ? `
+            <h4 style="margin-top:0.75rem;font-size:0.8rem;color:var(--muted)">Elastic Log Snippets</h4>
+            <div class="description-box">${report.elastic_log_snippets.map(s => escapeHtml(s)).join('<br>')}</div>
+          ` : ''}
+          ${report.is_vendor_related ? `
+            <div style="margin-top:0.75rem">
+              <button onclick="createPRDFromIncident('${data.run_id}')">Send to Meridian (Create PRD)</button>
+            </div>
+          ` : ''}
+        `;
+        logEvent(`Aegis report: ${report.title}`);
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function createPRDFromIncident(runId) {
+      try {
+        const res = await fetch(`${API}/api/v1/workflows/incident-analysis/${runId}/create-prd`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tech_lead: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'PRD workflow failed');
+        meridianSessionId = data.session_id;
+        document.getElementById('meridian-session-label').textContent = `Session: ${meridianSessionId.slice(0, 8)}... (from incident)`;
+        logEvent(data.message);
+        alert(data.message);
+        await meridianGeneratePRD();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function ingestMrKnowledge(mrIid) {
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/ingest/merge-request/${mrIid}`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Ingest failed');
+        logEvent(data.message);
+        loadKnowledgeStats();
+        loadKnowledgeDocs();
+        alert(data.message);
+      } catch (err) { alert(err.message); }
+    }
+  </script>
+</body>
+</html>

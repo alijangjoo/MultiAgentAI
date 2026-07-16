@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sage Knowledge Agent — Monitoring</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    :root {
+      --bg: #0a0e14; --surface: #151b26; --surface2: #1e2836; --border: #2a3848;
+      --text: #e7ecf3; --muted: #8b9cb3; --accent: #10b981; --accent2: #3b82f6;
+      --success: #22c55e; --warning: #f59e0b; --danger: #ef4444; --purple: #a855f7;
+    }
+    body { background: var(--bg); }
+    header.app-header {
+      background: linear-gradient(135deg, #064e3b 0%, #0a0e14 60%);
+      display: block;
+    }
+    header.app-header h1 span { color: var(--accent); }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem;
+      border-top: 3px solid var(--accent);
+    }
+    .stat-card.blue { border-top-color: var(--accent2); }
+    .stat-card.warn { border-top-color: var(--warning); }
+    .stat-card.danger { border-top-color: var(--danger); }
+    .stat-card .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 0.2rem; }
+    .stat-card .sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 1.25rem; }
+    .panel-header {
+      padding: 0.85rem 1.15rem; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.95rem;
+      display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+    }
+    .panel-body { padding: 0; }
+    .panel-body.padded { padding: 1rem 1.15rem; }
+    .panels-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    .panels-3 { display: grid; grid-template-columns: 2fr 1fr; gap: 1.25rem; }
+    @media (max-width: 1000px) { .panels-2, .panels-3 { grid-template-columns: 1fr; } }
+    .badge {
+      display: inline-block; padding: 0.12rem 0.45rem; border-radius: 4px;
+      font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+    }
+    .badge.running { background: rgba(59,130,246,0.2); color: var(--accent2); }
+    .badge.completed { background: rgba(34,197,94,0.2); color: var(--success); }
+    .badge.failed { background: rgba(239,68,68,0.2); color: var(--danger); }
+    .badge.pending { background: rgba(168,85,247,0.2); color: var(--purple); }
+    .badge.query { background: rgba(16,185,129,0.15); color: var(--accent); }
+    .badge.ingest { background: rgba(59,130,246,0.15); color: var(--accent2); }
+    .meta { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; }
+    .list-item {
+      padding: 0.85rem 1.15rem; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.12s;
+    }
+    .list-item:hover { background: var(--surface2); }
+    .list-item:last-child { border-bottom: none; }
+    .scroll-box { max-height: 420px; overflow-y: auto; }
+    .scroll-box-sm { max-height: 280px; overflow-y: auto; }
+    .toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    input, select, textarea {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.85rem;
+    }
+    button {
+      background: var(--accent); color: #042f2e; border: none;
+      padding: 0.5rem 0.9rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+    }
+    button:hover { opacity: 0.92; }
+    button.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-weight: 500; }
+    button.danger { background: var(--danger); color: white; }
+    .collection-bar { margin-bottom: 0.65rem; }
+    .collection-bar .bar-label { display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 0.25rem; }
+    .collection-bar .bar-track { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+    .collection-bar .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 4px; transition: width 0.4s; }
+    .sys-info { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.82rem; }
+    .sys-info dt { color: var(--muted); }
+    .sys-info dd { font-family: "Cascadia Code", monospace; word-break: break-all; margin-bottom: 0.35rem; }
+    .event-log { font-family: "Cascadia Code", monospace; font-size: 0.75rem; }
+    .event-log .evt { padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); }
+    .event-log .evt-type { color: var(--accent); }
+    .event-log .evt-time { color: var(--muted); }
+    .empty-state { padding: 2rem; text-align: center; color: var(--muted); }
+    .form-row { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.75rem; }
+    .form-row label { font-size: 0.78rem; color: var(--muted); }
+    .description-box {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.85rem; font-size: 0.85rem; line-height: 1.55; white-space: pre-wrap; max-height: 240px; overflow-y: auto;
+    }
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; padding: 1rem; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 800px; max-height: 90vh; overflow-y: auto; }
+    .modal-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; }
+    .modal-close { background: none; border: none; color: var(--muted); font-size: 1.5rem; cursor: pointer; }
+    .modal-body { padding: 1.25rem; }
+    .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+    .tab {
+      padding: 0.65rem 1rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .health-ok { color: var(--success); }
+    .health-bad { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <!-- KPI Stats -->
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Documents</div><div class="value" id="kpi-docs">—</div></div>
+      <div class="stat-card"><div class="label">Chunks</div><div class="value" id="kpi-chunks">—</div></div>
+      <div class="stat-card blue"><div class="label">Queries</div><div class="value" id="kpi-queries">—</div><div class="sub">Sage runs</div></div>
+      <div class="stat-card blue"><div class="label">Ingests</div><div class="value" id="kpi-ingests">—</div><div class="sub">Bulk + manual</div></div>
+      <div class="stat-card warn"><div class="label">Running</div><div class="value" id="kpi-running">—</div></div>
+      <div class="stat-card danger"><div class="label">Failed</div><div class="value" id="kpi-failed">—</div></div>
+      <div class="stat-card"><div class="label">Chroma</div><div class="value health-ok" id="kpi-health" style="font-size:1rem">—</div></div>
+    </div>
+
+    <div class="panels-3">
+      <!-- Collections -->
+      <div class="panel">
+        <div class="panel-header">Collections (ChromaDB)</div>
+        <div class="panel-body padded" id="collections-chart"></div>
+      </div>
+      <!-- System -->
+      <div class="panel">
+        <div class="panel-header">Vector Store</div>
+        <div class="panel-body padded">
+          <dl class="sys-info" id="sys-info"></dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="panels-2">
+      <!-- Runs -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Sage Agent Runs</span>
+          <div class="toolbar">
+            <select id="run-filter" onchange="filterRuns()">
+              <option value="">All</option>
+              <option value="knowledge_query">Queries</option>
+              <option value="knowledge_ingest">Ingests</option>
+              <option value="running">Running</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        <div class="panel-body scroll-box" id="runs-list"><div class="empty-state">Loading runs...</div></div>
+      </div>
+
+      <!-- Live Events -->
+      <div class="panel">
+        <div class="panel-header">Live Event Stream</div>
+        <div class="panel-body scroll-box event-log" id="events-list"><div class="empty-state">Waiting for events...</div></div>
+      </div>
+    </div>
+
+    <!-- Operations tabs -->
+    <div class="panel">
+      <div class="tabs">
+        <div class="tab active" data-tab="query" onclick="switchTab('query')">Query (RAG)</div>
+        <div class="tab" data-tab="ingest" onclick="switchTab('ingest')">Manual Ingest</div>
+        <div class="tab" data-tab="bulk" onclick="switchTab('bulk')">Bulk Ingest</div>
+        <div class="tab" data-tab="docs" onclick="switchTab('docs')">Documents</div>
+        <div class="tab" data-tab="specs" onclick="switchTab('specs')">Architecture Specs</div>
+      </div>
+      <div class="panel-body padded">
+        <div class="tab-content active" id="tab-query">
+          <div class="panels-2" style="gap:1rem">
+            <div>
+              <div class="form-row"><label>Question</label><input type="text" id="query-text" placeholder="How does CreateContract API work?" style="width:100%" /></div>
+              <div class="form-row"><label>Collections (optional)</label>
+                <select id="query-collections" multiple style="width:100%;min-height:70px"></select>
+              </div>
+              <button onclick="runQuery()">Ask Sage (with synthesis)</button>
+            </div>
+            <div>
+              <label style="font-size:0.78rem;color:var(--muted)">Answer</label>
+              <div class="description-box" id="query-answer" style="margin-top:0.35rem;min-height:120px">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-content" id="tab-ingest">
+          <div class="panels-2" style="gap:1rem">
+            <div>
+              <div class="form-row"><label>Collection</label><select id="ingest-collection" style="width:100%"></select></div>
+              <div class="form-row"><label>Title</label><input type="text" id="ingest-title" style="width:100%" /></div>
+              <div class="form-row"><label>Content</label><textarea id="ingest-content" rows="5" style="width:100%"></textarea></div>
+              <div class="form-row"><label>Tags</label><input type="text" id="ingest-tags" placeholder="api,dizi" style="width:100%" /></div>
+              <button class="secondary" onclick="manualIngest()">Add Document</button>
+            </div>
+          </div>
+        </div>
+        <div class="tab-content" id="tab-bulk">
+          <div class="toolbar">
+            <button class="secondary" onclick="bulkGitlab()">Ingest GitLab Source</button>
+            <button class="secondary" onclick="bulkConfluence()">Ingest Confluence</button>
+            <button class="secondary" onclick="bulkLocal()">Ingest Local ADR/Docs</button>
+          </div>
+          <p class="meta" style="margin-top:0.75rem">Bulk ingest creates tracked Sage runs visible in the Runs panel above.</p>
+        </div>
+        <div class="tab-content" id="tab-docs">
+          <div class="toolbar" style="margin-bottom:0.75rem">
+            <select id="doc-collection-filter" onchange="loadDocuments()"><option value="">All collections</option></select>
+            <input type="text" id="doc-search" placeholder="Filter by title..." oninput="filterDocList()" />
+            <button class="secondary" onclick="loadDocuments()">Reload</button>
+          </div>
+          <div class="scroll-box-sm" id="docs-list"><div class="empty-state">No documents</div></div>
+        </div>
+        <div class="tab-content" id="tab-specs">
+          <div class="toolbar" style="margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem">
+            <select id="spec-tag-filter" onchange="loadSpecs()">
+              <option value="">All specs</option>
+              <option value="new-structure">new-structure</option>
+              <option value="legacy-api">legacy-api</option>
+            </select>
+            <input type="text" id="spec-search" placeholder="Filter by title..." oninput="filterSpecList()" />
+            <button class="secondary" onclick="loadSpecs()">Reload</button>
+            <button onclick="scanSpecs()">Scan from Source</button>
+            <button class="secondary" onclick="syncSpecs()">Sync to Knowledge</button>
+            <a href="#" onclick="openSpecTemplate();return false" class="meta" style="align-self:center">View template</a>
+          </div>
+          <p class="meta" style="margin-bottom:0.75rem">Scans local Dizi repo (<code>src/</code> → new-structure, <code>Dizi/</code> → legacy-api). Edit specs here; changes sync to ChromaDB.</p>
+          <div class="panels-2" style="gap:1rem">
+            <div class="scroll-box-sm" id="specs-list"><div class="empty-state">Loading specs...</div></div>
+            <div id="spec-editor-panel" style="display:none">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;margin-bottom:0.5rem">
+                <div>
+                  <strong id="spec-editor-title"></strong>
+                  <div class="meta" id="spec-editor-meta"></div>
+                </div>
+                <button onclick="saveSpec()">Save &amp; Sync</button>
+              </div>
+              <textarea id="spec-editor-body" rows="22" style="width:100%;font-family:monospace;font-size:0.82rem"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Run Detail Modal -->
+  <div class="modal-overlay" id="run-modal" onclick="if(event.target===this)closeRunModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div><strong id="run-modal-title">Run Detail</strong><div class="meta" id="run-modal-id"></div></div>
+        <button class="modal-close" onclick="closeRunModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="run-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Document Detail Modal -->
+  <div class="modal-overlay" id="doc-modal" onclick="if(event.target===this)closeDocModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div><strong id="doc-modal-title"></strong><div class="meta" id="doc-modal-meta"></div></div>
+        <button class="modal-close" onclick="closeDocModal()">&times;</button>
+      </div>
+      <div class="modal-body"><div class="description-box" id="doc-modal-content" style="max-height:60vh"></div></div>
+    </div>
+  </div>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Sage Knowledge', 'ChromaDB RAG · Architecture Specs · Ingest', 'knowledge');
+    const API = Dashboard.API;
+    let monitoring = null;
+    let allRuns = [];
+    let allDocs = [];
+    let allSpecs = [];
+    let currentSpecId = null;
+    let ws;
+
+    function escapeHtml(t) {
+      const d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML;
+    }
+
+    function switchTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${name}`));
+      if (name === 'docs') loadDocuments();
+      if (name === 'specs') loadSpecs();
+    }
+
+    function renderMonitoring(data) {
+      monitoring = data;
+      const stats = data.stats || {};
+      const summary = data.run_summary || {};
+
+      document.getElementById('kpi-docs').textContent = stats.total_documents ?? 0;
+      document.getElementById('kpi-chunks').textContent = stats.total_chunks ?? 0;
+      document.getElementById('kpi-queries').textContent = summary.queries ?? 0;
+      document.getElementById('kpi-ingests').textContent = summary.ingests ?? 0;
+      document.getElementById('kpi-running').textContent = summary.running ?? 0;
+      document.getElementById('kpi-failed').textContent = summary.failed ?? 0;
+      const healthEl = document.getElementById('kpi-health');
+      healthEl.textContent = data.chroma_healthy ? 'Healthy' : 'Issue';
+      healthEl.className = data.chroma_healthy ? 'value health-ok' : 'value health-bad';
+      healthEl.style.fontSize = '1rem';
+
+      const maxChunks = Math.max(...(data.collections || []).map(c => c.chunks || 0), 1);
+      document.getElementById('collections-chart').innerHTML = (data.collections || []).map(c => `
+        <div class="collection-bar">
+          <div class="bar-label"><span>${escapeHtml(c.label)}</span><span>${c.chunks} chunks</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.round((c.chunks / maxChunks) * 100)}%"></div></div>
+        </div>
+      `).join('') || '<div class="empty-state">No collections</div>';
+
+      document.getElementById('sys-info').innerHTML = `
+        <dt>Chroma Path</dt><dd>${escapeHtml(stats.chroma_path)}</dd>
+        <dt>Embedding Model</dt><dd>${escapeHtml(stats.embedding_model)}</dd>
+        <dt>Collections</dt><dd>${(data.collections || []).length}</dd>
+        <dt>Last Update</dt><dd>${new Date().toLocaleTimeString()}</dd>
+      `;
+
+      allRuns = data.recent_runs || [];
+      filterRuns();
+      renderEvents(data.recent_events || []);
+    }
+
+    function filterRuns() {
+      const f = document.getElementById('run-filter').value;
+      let runs = allRuns;
+      if (f === 'running' || f === 'failed') runs = runs.filter(r => r.status === f);
+      else if (f) runs = runs.filter(r => r.workflow_type === f);
+
+      const el = document.getElementById('runs-list');
+      if (!runs.length) { el.innerHTML = '<div class="empty-state">No matching runs</div>'; return; }
+
+      el.innerHTML = runs.map(r => {
+        const typeBadge = r.workflow_type === 'knowledge_query'
+          ? '<span class="badge query">query</span>'
+          : '<span class="badge ingest">ingest</span>';
+        const preview = r.question || r.source || r.answer_preview || '—';
+        return `
+          <div class="list-item" onclick="openRunDetail('${r.id}')">
+            ${typeBadge} <span class="badge ${r.status}">${r.status}</span>
+            <div style="margin-top:0.35rem;font-size:0.88rem">${escapeHtml(String(preview).slice(0, 100))}</div>
+            <div class="meta">${new Date(r.created_at).toLocaleString()} · ${r.id.slice(0, 8)}...</div>
+          </div>`;
+      }).join('');
+    }
+
+    function renderEvents(events) {
+      const el = document.getElementById('events-list');
+      if (!events.length) { el.innerHTML = '<div class="empty-state">No events yet</div>'; return; }
+      el.innerHTML = events.map(e => `
+        <div class="evt">
+          <span class="evt-time">${new Date(e.created_at).toLocaleTimeString()}</span>
+          <span class="evt-type"> [${escapeHtml(e.event_type)}]</span>
+          ${escapeHtml(e.message)}
+          <div class="meta">run: ${e.run_id.slice(0, 8)}...</div>
+        </div>
+      `).join('');
+    }
+
+    async function openRunDetail(runId) {
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/runs/${runId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        const run = data.run;
+        document.getElementById('run-modal-title').textContent = `${run.workflow_type} · ${run.status}`;
+        document.getElementById('run-modal-id').textContent = run.id;
+        const eventsHtml = (data.events || []).map(e =>
+          `<div class="evt"><span class="evt-time">${new Date(e.created_at).toLocaleTimeString()}</span> <span class="evt-type">[${escapeHtml(e.event_type)}]</span> ${escapeHtml(e.message)}</div>`
+        ).join('');
+        document.getElementById('run-modal-body').innerHTML = `
+          <div class="form-row"><label>Input</label><div class="description-box">${escapeHtml(JSON.stringify(run.input_payload, null, 2))}</div></div>
+          <div class="form-row"><label>Output</label><div class="description-box">${escapeHtml(JSON.stringify(run.output_payload, null, 2))}</div></div>
+          ${run.error_message ? `<div class="form-row"><label>Error</label><div class="description-box" style="color:var(--danger)">${escapeHtml(run.error_message)}</div></div>` : ''}
+          <h4 style="margin:1rem 0 0.5rem;font-size:0.8rem;color:var(--muted)">Events</h4>
+          <div class="event-log" style="border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto">${eventsHtml || 'No events'}</div>
+        `;
+        document.getElementById('run-modal').classList.add('open');
+      } catch (err) { alert(err.message); }
+    }
+
+    function closeRunModal() { document.getElementById('run-modal').classList.remove('open'); }
+    function closeDocModal() { document.getElementById('doc-modal').classList.remove('open'); }
+
+    async function loadCollections() {
+      const res = await fetch(`${API}/api/v1/knowledge/collections`);
+      const data = await res.json();
+      const opts = (data.collections || []).map(c => `<option value="${c.id}">${escapeHtml(c.label)}</option>`).join('');
+      document.getElementById('query-collections').innerHTML = opts;
+      document.getElementById('ingest-collection').innerHTML = opts;
+      document.getElementById('doc-collection-filter').innerHTML = '<option value="">All collections</option>' + opts;
+    }
+
+    async function loadDocuments() {
+      const col = document.getElementById('doc-collection-filter').value;
+      const params = col ? `?collection=${col}&limit=100` : '?limit=100';
+      const res = await fetch(`${API}/api/v1/knowledge/documents${params}`);
+      allDocs = await res.json();
+      filterDocList();
+    }
+
+    function filterDocList() {
+      const q = document.getElementById('doc-search').value.toLowerCase();
+      const filtered = allDocs.filter(d => !q || (d.title || '').toLowerCase().includes(q));
+      const el = document.getElementById('docs-list');
+      if (!filtered.length) { el.innerHTML = '<div class="empty-state">No documents</div>'; return; }
+      el.innerHTML = filtered.map(d => `
+        <div class="list-item">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem">
+            <div onclick="openDocDetail('${d.id}')" style="flex:1">
+              <span class="badge ingest">${escapeHtml(d.collection)}</span> <strong>${escapeHtml(d.title)}</strong>
+              <div class="meta">${escapeHtml(d.source || '')} ${d.task_key ? '· ' + d.task_key : ''}</div>
+            </div>
+            <button class="danger" style="padding:0.3rem 0.6rem;font-size:0.75rem" onclick="deleteDoc('${d.id}')">Delete</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function openDocDetail(docId) {
+      const res = await fetch(`${API}/api/v1/knowledge/documents/${docId}/detail`);
+      const doc = await res.json();
+      if (!res.ok) { alert(doc.detail || 'Not found'); return; }
+      document.getElementById('doc-modal-title').textContent = doc.title;
+      document.getElementById('doc-modal-meta').textContent = `${doc.collection} · ${doc.chunk_count} chunks · ${doc.source || ''}`;
+      document.getElementById('doc-modal-content').textContent = doc.content;
+      document.getElementById('doc-modal').classList.add('open');
+    }
+
+    async function deleteDoc(docId) {
+      if (!confirm('Delete this document from ChromaDB?')) return;
+      await fetch(`${API}/api/v1/knowledge/documents/${docId}`, { method: 'DELETE' });
+      loadDocuments();
+      refreshAll();
+    }
+
+    async function runQuery() {
+      const question = document.getElementById('query-text').value.trim();
+      if (!question) return;
+      document.getElementById('query-answer').textContent = 'Sage is retrieving and synthesizing...';
+      const cols = Array.from(document.getElementById('query-collections').selectedOptions).map(o => o.value);
+      const body = { question, top_k: 5, synthesize: true };
+      if (cols.length) body.collections = cols;
+      const res = await fetch(`${API}/api/v1/knowledge/query`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      document.getElementById('query-answer').textContent = data.answer || JSON.stringify(data.results, null, 2);
+      refreshAll();
+    }
+
+    async function manualIngest() {
+      const collection = document.getElementById('ingest-collection').value;
+      const title = document.getElementById('ingest-title').value.trim();
+      const content = document.getElementById('ingest-content').value.trim();
+      const tags = document.getElementById('ingest-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+      if (!title || !content) { alert('Title and content required'); return; }
+      const res = await fetch(`${API}/api/v1/knowledge/ingest`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection, title, content, tags }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail); return; }
+      alert(data.message);
+      document.getElementById('ingest-title').value = '';
+      document.getElementById('ingest-content').value = '';
+      refreshAll();
+    }
+
+    async function bulkGitlab() {
+      if (!confirm('Ingest GitLab source into ChromaDB?')) return;
+      const res = await fetch(`${API}/api/v1/knowledge/ingest/gitlab?limit=100`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || data.detail);
+      refreshAll();
+    }
+
+    async function bulkConfluence() {
+      const res = await fetch(`${API}/api/v1/knowledge/ingest/confluence?query=API&limit=20`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || data.detail);
+      refreshAll();
+    }
+
+    async function bulkLocal() {
+      const res = await fetch(`${API}/api/v1/knowledge/ingest/local`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || data.detail);
+      refreshAll();
+    }
+
+    async function loadSpecs() {
+      const tag = document.getElementById('spec-tag-filter').value;
+      const params = tag ? `?structure_tag=${encodeURIComponent(tag)}` : '';
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/specs${params}`);
+        allSpecs = res.ok ? await res.json() : [];
+      } catch (_) { allSpecs = []; }
+      filterSpecList();
+    }
+
+    function filterSpecList() {
+      const q = (document.getElementById('spec-search').value || '').toLowerCase();
+      const filtered = allSpecs.filter(s =>
+        !q || (s.title || '').toLowerCase().includes(q) || (s.spec_id || '').toLowerCase().includes(q)
+      );
+      const el = document.getElementById('specs-list');
+      if (!filtered.length) {
+        el.innerHTML = '<div class="empty-state">No specs — click Scan from Source</div>';
+        return;
+      }
+      el.innerHTML = filtered.map(s => {
+        const tagBadge = s.structure_tag === 'new-structure'
+          ? '<span class="badge query">new-structure</span>'
+          : '<span class="badge ingest">legacy-api</span>';
+        const active = s.spec_id === currentSpecId ? ' style="border-color:var(--accent)"' : '';
+        const sid = encodeURIComponent(s.spec_id);
+        return `
+          <div class="list-item" data-spec-id="${sid}" onclick="openSpecEditor(decodeURIComponent(this.dataset.specId))"${active}>
+            ${tagBadge} <strong>${escapeHtml(s.title)}</strong>
+            <div class="meta">${escapeHtml(s.spec_id)} · ${escapeHtml(s.source_path || '')}</div>
+          </div>`;
+      }).join('');
+    }
+
+    async function openSpecEditor(specId) {
+      currentSpecId = specId;
+      filterSpecList();
+      const res = await fetch(`${API}/api/v1/knowledge/specs/${encodeURIComponent(specId)}`);
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'Not found'); return; }
+      document.getElementById('spec-editor-panel').style.display = 'block';
+      document.getElementById('spec-editor-title').textContent = data.frontmatter?.title || specId;
+      const fm = data.frontmatter || {};
+      document.getElementById('spec-editor-meta').textContent =
+        `${fm.structure_tag || ''} · ${fm.source_kind || ''} · tags: ${(fm.tags || []).join(', ')}`;
+      document.getElementById('spec-editor-body').value = data.body || '';
+    }
+
+    async function saveSpec() {
+      if (!currentSpecId) return;
+      const body = document.getElementById('spec-editor-body').value.trim();
+      if (body.length < 10) { alert('Body too short'); return; }
+      const res = await fetch(`${API}/api/v1/knowledge/specs/${encodeURIComponent(currentSpecId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, sync_knowledge: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'Save failed'); return; }
+      alert('Spec saved and synced to Knowledge');
+      loadSpecs();
+      refreshAll();
+    }
+
+    async function scanSpecs() {
+      if (!confirm('Scan Dizi repo and regenerate all architecture specs?')) return;
+      const el = document.getElementById('specs-list');
+      el.innerHTML = '<div class="empty-state">Scanning repository...</div>';
+      const res = await fetch(`${API}/api/v1/knowledge/specs/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sync_knowledge: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'Scan failed'); loadSpecs(); return; }
+      alert(data.message || `Generated ${data.specs_generated} specs`);
+      loadSpecs();
+      refreshAll();
+    }
+
+    async function syncSpecs() {
+      const res = await fetch(`${API}/api/v1/knowledge/specs/sync`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail); return; }
+      alert(data.message);
+      refreshAll();
+    }
+
+    async function openSpecTemplate() {
+      const res = await fetch(`${API}/api/v1/knowledge/specs/template`);
+      const text = await res.text();
+      const w = window.open('', '_blank');
+      if (w) {
+        w.document.write('<pre style="white-space:pre-wrap;font-family:monospace;padding:1rem">' +
+          escapeHtml(text) + '</pre>');
+        w.document.close();
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/monitoring?runs_limit=40`);
+        const data = await res.json();
+        if (res.ok) renderMonitoring(data);
+      } catch (_) {}
+    }
+
+    function connectWebSocket() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/knowledge`);
+      ws.onopen = () => {
+        document.getElementById('ws-status').className = 'status-dot connected';
+        document.getElementById('ws-label').textContent = 'Live';
+      };
+      ws.onclose = () => {
+        document.getElementById('ws-status').className = 'status-dot disconnected';
+        document.getElementById('ws-label').textContent = 'Reconnecting...';
+        setTimeout(connectWebSocket, 3000);
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'knowledge_update' && data.monitoring) {
+          renderMonitoring(data.monitoring);
+        }
+      };
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { closeRunModal(); closeDocModal(); }
+    });
+
+    loadCollections();
+    refreshAll();
+    connectWebSocket();
+  </script>
+</body>
+</html>

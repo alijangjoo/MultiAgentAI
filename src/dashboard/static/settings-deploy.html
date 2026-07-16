@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deploy Branches — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="panel">
+      <div class="panel-header">
+        <span>Deploy Branch Settings (MR Targets)</span>
+        <button class="secondary" onclick="saveDeploySettings()">Save</button>
+      </div>
+      <div class="panel-body padded">
+        <div class="panels" style="gap:1rem">
+          <div class="branch-form">
+            <div class="form-row"><label>Feature source branch</label><select id="cfg-feature-source" style="width:100%"></select></div>
+            <div class="form-row"><label>Dev MR target</label><select id="cfg-dev-target" style="width:100%"></select></div>
+          </div>
+          <div class="branch-form">
+            <div class="form-row"><label>Stage MR target</label><select id="cfg-stage-target" style="width:100%"></select></div>
+            <div class="form-row"><label>Production MR target</label><select id="cfg-prod-target" style="width:100%"></select></div>
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:1rem">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" id="cfg-auto-send" />
+            IsAutomaticSendMessage — send Deploy Request to Mattermost without Tech Lead approval
+          </label>
+          <p class="meta">Default is off. When enabled, a successful Stage pipeline posts the Deploy Request to Mattermost automatically (no Generate/Send click).</p>
+        </div>
+        <p class="meta" style="margin-top:0.75rem">Pinned branches (main, dev-oms-v2, stage) always appear in lists.</p>
+      </div>
+    </div>
+  </main>
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Deploy Branches', 'Feature source & MR targets per environment', 'settings-deploy');
+    const API = Dashboard.API;
+    let gitlabBranches = [];
+
+    function normalizeBranchOptions(branches, selected) {
+      const pinned = ['main', 'master', selected].filter(Boolean);
+      const seen = new Set();
+      const out = [];
+      for (const b of pinned) { if (!seen.has(b)) { out.push(b); seen.add(b); } }
+      for (const b of branches) { if (!seen.has(b)) { out.push(b); seen.add(b); } }
+      return out;
+    }
+
+    async function loadDeploySettings() {
+      const [cfgRes, branchRes] = await Promise.all([
+        fetch(`${API}/api/v1/settings/deploy-branches`),
+        fetch(`${API}/api/v1/settings/gitlab-branches?limit=100`),
+      ]);
+      const deploySettings = await cfgRes.json();
+      const branchData = branchRes.ok ? await branchRes.json() : { branches: [] };
+      gitlabBranches = branchData.branches || [];
+
+      const fillSelect = (id, value) => {
+        const el = document.getElementById(id);
+        const all = normalizeBranchOptions(gitlabBranches, value);
+        el.innerHTML = all.map(b =>
+          `<option value="${b}" ${b === value ? 'selected' : ''}>${Dashboard.escapeHtml(b)}</option>`
+        ).join('');
+      };
+
+      fillSelect('cfg-feature-source', deploySettings.feature_source_branch);
+      fillSelect('cfg-dev-target', deploySettings.dev_target_branch);
+      fillSelect('cfg-stage-target', deploySettings.stage_target_branch);
+      fillSelect('cfg-prod-target', deploySettings.production_target_branch);
+      document.getElementById('cfg-auto-send').checked = !!deploySettings.is_automatic_send_message;
+    }
+
+    async function saveDeploySettings() {
+      const res = await fetch(`${API}/api/v1/settings/deploy-branches`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feature_source_branch: document.getElementById('cfg-feature-source').value,
+          dev_target_branch: document.getElementById('cfg-dev-target').value,
+          stage_target_branch: document.getElementById('cfg-stage-target').value,
+          production_target_branch: document.getElementById('cfg-prod-target').value,
+          is_automatic_send_message: document.getElementById('cfg-auto-send').checked,
+          updated_by: 'dashboard',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Save failed');
+      alert('Deploy branch settings saved');
+      loadDeploySettings();
+    }
+
+    loadDeploySettings();
+    Dashboard.connectWebSocket();
+  </script>
+</body>
+</html>

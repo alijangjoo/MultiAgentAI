@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Home — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="stats-grid" id="home-stats">
+      <div class="stat-card"><div class="label">Agent Runs</div><div class="value" id="s-runs">—</div></div>
+      <div class="stat-card"><div class="label">Running</div><div class="value" id="s-running">—</div></div>
+      <div class="stat-card"><div class="label">Open MRs</div><div class="value" id="s-mrs">—</div></div>
+      <div class="stat-card"><div class="label">Pipelines</div><div class="value" id="s-pipes">—</div></div>
+      <div class="stat-card"><div class="label">Knowledge Docs</div><div class="value" id="s-docs">—</div></div>
+      <div class="stat-card"><div class="label">HITL Pending</div><div class="value" id="s-hitl">—</div></div>
+    </div>
+
+    <h2 style="font-size:1rem;margin-bottom:0.75rem;color:var(--muted)">Agents &amp; Workflows</h2>
+    <div class="home-grid">
+      <a class="agent-card" href="/dashboard/develop">
+        <h3>Forge — Develop</h3>
+        <p>Jira tasks, AI branch naming, architecture specs, development workflow, MR creation.</p>
+        <div class="link-hint">Open Develop →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/pipelines">
+        <h3>GitLab Pipelines &amp; Release</h3>
+        <p>After a <code>feat:</code> commit: run <strong>bump-version</strong> with ENV=dev/stg/prd → CI deploys → Sync in Argo CD.</p>
+        <div class="link-hint">Open Pipelines →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/deploy-requests">
+        <h3>Deploy Request</h3>
+        <p>After Stage merge + ENV=stg pipeline: review message, set Priority/Date, publish to Mattermost.</p>
+        <div class="link-hint">Open Deploy Request →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/knowledge">
+        <h3>Sage — Knowledge</h3>
+        <p>RAG queries, architecture specs, ingest, ChromaDB monitoring.</p>
+        <div class="link-hint">Open Sage Monitor →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/develop#meridian">
+        <h3>Meridian — Product Manager</h3>
+        <p>Chat, PRD generation, Jira story creation from product ideas.</p>
+        <div class="link-hint">On Develop page →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/develop#sentinel">
+        <h3>Sentinel — Code Review</h3>
+        <p>Review merge requests from GitLab MR list on the Develop page.</p>
+        <div class="link-hint">On Develop page →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/develop#aegis">
+        <h3>Aegis — Incident</h3>
+        <p>Elastic incident analysis and PRD flow from production issues.</p>
+        <div class="link-hint">On Develop page →</div>
+      </a>
+    </div>
+
+    <h2 style="font-size:1rem;margin:1.5rem 0 0.75rem;color:var(--muted)">Settings</h2>
+    <div class="home-grid">
+      <a class="agent-card" href="/dashboard/settings/agents">
+        <h3>Agent Executors</h3>
+        <p>Forge &amp; Sentinel: Cursor, OpenAI, or Claude. Cursor bridge configuration.</p>
+        <div class="link-hint">Configure →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/settings/deploy">
+        <h3>Deploy Branches</h3>
+        <p>Feature source branch (main), MR targets for dev / stage / production.</p>
+        <div class="link-hint">Configure →</div>
+      </a>
+      <a class="agent-card" href="/dashboard/knowledge">
+        <h3>Architecture Specs</h3>
+        <p>Scan Dizi repo, edit specs, sync to Knowledge Agent (Sage tab).</p>
+        <div class="link-hint">Sage → Architecture Specs tab</div>
+      </a>
+    </div>
+  </main>
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Home', 'Multi-Agent SDLC platform overview', 'home');
+    const API = Dashboard.API;
+
+    async function loadHomeStats() {
+      try {
+        const [stats, mrs, pipes, knowledge] = await Promise.all([
+          fetch(`${API}/api/v1/dashboard/stats`).then(r => r.json()),
+          fetch(`${API}/api/v1/gitlab/merge-requests?limit=50`).then(r => r.json()),
+          fetch(`${API}/api/v1/gitlab/pipelines?limit=30`).then(r => r.json()),
+          fetch(`${API}/api/v1/knowledge/stats`).then(r => r.json()),
+        ]);
+        document.getElementById('s-runs').textContent = stats.total_runs ?? 0;
+        document.getElementById('s-running').textContent = stats.running ?? 0;
+        document.getElementById('s-hitl').textContent = stats.pending_hitl_checkpoints ?? 0;
+        document.getElementById('s-mrs').textContent = mrs.count ?? 0;
+        document.getElementById('s-pipes').textContent = pipes.count ?? 0;
+        document.getElementById('s-docs').textContent = knowledge.total_documents ?? 0;
+      } catch (_) {}
+    }
+
+    Dashboard.connectWebSocket((data) => {
+      if (data.type === 'dashboard_update') loadHomeStats();
+    });
+    loadHomeStats();
+  </script>
+</body>
+</html>

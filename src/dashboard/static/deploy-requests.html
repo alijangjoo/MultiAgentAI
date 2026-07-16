@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deploy Request — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    .workspace {
+      display: grid;
+      grid-template-columns: 3fr 9fr;
+      gap: 1rem;
+      align-items: start;
+      min-height: 560px;
+    }
+    @media (max-width: 960px) {
+      .workspace { grid-template-columns: 1fr; }
+    }
+    .workspace > .panel { margin: 0; min-height: 560px; display: flex; flex-direction: column; }
+    .workspace .panel-body { flex: 1; overflow: auto; max-height: calc(100vh - 220px); }
+    .deploy-item {
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 0.5rem;
+      cursor: pointer;
+      border-radius: 6px;
+      margin-bottom: 0.15rem;
+    }
+    .deploy-item:hover { background: rgba(255,255,255,0.04); }
+    .deploy-item.active {
+      outline: 1px solid var(--accent, #6ea8fe);
+      background: rgba(110, 168, 254, 0.08);
+    }
+    .msg-preview {
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      background: rgba(0,0,0,0.2);
+      padding: 0.75rem;
+      border-radius: 6px;
+      max-height: 420px;
+      overflow: auto;
+    }
+    .detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    .mr-tabs { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .mr-tabs button.active { outline: 1px solid var(--accent, #6ea8fe); }
+    .mr-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
+      border-bottom: 1px solid var(--border); padding: 0.65rem 0;
+    }
+    .mr-row .left { min-width: 0; }
+    .detail-empty {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 320px; color: var(--muted, #9aa4b2); text-align: center; padding: 2rem;
+    }
+    .detail-body { display: none; }
+    .detail-body.visible { display: block; }
+    .list-section-label {
+      font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--muted, #9aa4b2); margin: 0.75rem 0 0.35rem; padding: 0 0.35rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="workspace">
+      <!-- 3 col: Ready / In progress (newest pipeline first) -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Ready / In progress</span>
+          <div class="toolbar">
+            <button class="secondary" type="button" onclick="syncFromGitlab()">Sync</button>
+            <button class="secondary" type="button" onclick="loadAll()">Refresh</button>
+          </div>
+        </div>
+        <div class="panel-body padded" id="ready-list"><div class="empty-state">Loading...</div></div>
+      </div>
+
+      <!-- 9 col: Deploy Request detail -->
+      <div class="panel" id="detail-panel">
+        <div class="panel-header">
+          <span id="detail-title">Deploy Request</span>
+          <button class="secondary" type="button" id="btn-close-detail" style="display:none" onclick="closeDetail()">Close</button>
+        </div>
+        <div class="panel-body padded">
+          <div id="detail-empty" class="detail-empty">
+            Select a pipeline from the left to generate or send the Deploy Request message.
+          </div>
+          <div id="detail-body" class="detail-body">
+            <div class="meta" id="detail-meta"></div>
+            <div class="meta" id="auto-fields" style="margin-top:0.75rem;line-height:1.7"></div>
+            <div class="form-row" id="row-jira" style="display:none;margin-top:0.75rem">
+              <label>Jira key (only if auto-detect failed)</label>
+              <input type="text" id="fld-jira" placeholder="VEN-100" />
+            </div>
+            <div class="form-row">
+              <label>Date&amp;Times (only field you set — Tech Lead publish time)</label>
+              <input type="text" id="fld-publish-at" placeholder="2026-07-12 14:00" />
+            </div>
+            <div class="form-row">
+              <label>Message preview</label>
+              <textarea id="fld-message" class="msg-preview" rows="16" style="width:100%"></textarea>
+            </div>
+            <div class="detail-actions">
+              <button type="button" id="btn-generate" onclick="generateMessage()">Generate Message</button>
+              <button type="button" class="secondary" onclick="saveDraft()">Save Date&amp;Times / preview</button>
+              <button type="button" class="secondary" id="btn-assign-jira" onclick="assignJira()">Assign Jira</button>
+              <button type="button" id="btn-send" onclick="sendToMattermost()">Send to Mattermost</button>
+              <button type="button" class="secondary" id="btn-reject" onclick="rejectPublish()">Reject</button>
+            </div>
+            <div class="meta" id="detail-error" style="color:#f87171;margin-top:0.5rem"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <div class="panel-header">
+        <span>Open Merge Requests</span>
+        <div class="toolbar">
+          <button class="secondary" type="button" onclick="loadOpenMrs()">Refresh MRs</button>
+        </div>
+      </div>
+      <div class="panel-body padded">
+        <div class="mr-tabs">
+          <button type="button" class="secondary active" id="tab-stage" onclick="showMrTab('stage')">Stage</button>
+          <button type="button" class="secondary" id="tab-dev" onclick="showMrTab('dev')">Dev</button>
+          <button type="button" class="secondary" id="tab-production" onclick="showMrTab('production')">Production</button>
+        </div>
+        <div class="meta" id="mr-branch-meta" style="margin-bottom:0.5rem"></div>
+        <div id="open-mrs-list"><div class="empty-state">Loading open MRs...</div></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <div class="panel-header"><span>History / Published</span></div>
+      <div class="panel-body" id="published-list"><div class="empty-state">None yet</div></div>
+    </div>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader(
+      'app-header',
+      'Deploy Request',
+      'Successful Stage pipeline (poll 30s) → Generate Message → Mattermost',
+      'deploy-requests'
+    );
+    const API = Dashboard.API;
+    let selected = null;
+    let allItems = [];
+    let openMrs = { dev: [], stage: [], production: [], branches: {} };
+    let mrTab = 'stage';
+
+    function statusBadge(status) {
+      if (!status) return '<span class="meta">not started</span>';
+      if (status === 'published') {
+        return `<span class="badge ${Dashboard.statusBadgeClass(status)}">Published</span>`;
+      }
+      return `<span class="meta">${Dashboard.escapeHtml(status)}</span>`;
+    }
+
+    /** Newest GitLab pipeline first (higher pipeline_id), then created_at. */
+    function byNewestPipeline(a, b) {
+      const pa = Number(a.pipeline_id) || 0;
+      const pb = Number(b.pipeline_id) || 0;
+      if (pb !== pa) return pb - pa;
+      return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    }
+
+    /**
+     * Ready: fully successful Stage pipelines until Mattermost History (Published).
+     * No Success / Ready to send badges — just pipeline identity.
+     */
+    function isReadyItem(r) {
+      if (!r || !r.pipeline_id) return false;
+      if (r.status === 'published') return false;
+      if (r.status === 'waiting_pipeline' || r.status === 'pipeline_triggered' || r.status === 'failed') {
+        return false;
+      }
+      return r.status === 'pipeline_ready'
+        || r.status === 'draft'
+        || r.status === 'waiting_approval'
+        || r.status === 'needs_jira';
+    }
+
+    function isHistoryItem(r) {
+      return r && r.status === 'published';
+    }
+
+    function renderReadyList(ready) {
+      const el = document.getElementById('ready-list');
+      const readySorted = [...ready].sort(byNewestPipeline);
+      if (!readySorted.length) {
+        el.innerHTML = '<div class="empty-state">No fully successful Stage pipelines outside History — try Sync</div>';
+        return;
+      }
+      el.innerHTML = readySorted.map(r => `
+        <div class="deploy-item ${selected && selected.id === r.id ? 'active' : ''}" onclick="openDetail('${r.id}')">
+          <strong>#${r.pipeline_id || '-'}</strong>
+          <span style="margin-left:0.35rem">${Dashboard.escapeHtml(r.version || '')}</span>
+          <div class="meta">${Dashboard.escapeHtml(r.jira_key || '-')} · MR !${r.mr_iid || '-'}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderPublished(items) {
+      const el = document.getElementById('published-list');
+      const sorted = [...items].sort(byNewestPipeline);
+      if (!sorted.length) {
+        el.innerHTML = '<div class="empty-state">None yet</div>';
+        return;
+      }
+      el.innerHTML = sorted.map(r => `
+        <div class="deploy-item ${selected && selected.id === r.id ? 'active' : ''}" onclick="openDetail('${r.id}')">
+          <strong>#${r.pipeline_id || '-'}</strong>
+          <span style="margin-left:0.35rem">${Dashboard.escapeHtml(r.version || '')}</span>
+          <div class="meta">Published · ${Dashboard.escapeHtml(r.jira_key || '-')}</div>
+        </div>
+      `).join('');
+    }
+
+    function showMrTab(tab) {
+      mrTab = tab;
+      ['dev', 'stage', 'production'].forEach(t => {
+        const btn = document.getElementById(`tab-${t}`);
+        if (btn) btn.classList.toggle('active', t === tab);
+      });
+      renderOpenMrs();
+    }
+
+    function renderOpenMrs() {
+      const el = document.getElementById('open-mrs-list');
+      const meta = document.getElementById('mr-branch-meta');
+      const branch = (openMrs.branches || {})[mrTab] || '-';
+      meta.textContent = `Target branch for ${mrTab}: ${branch}`;
+      const items = openMrs[mrTab] || [];
+      if (!items.length) {
+        el.innerHTML = `<div class="empty-state">No open MRs to ${Dashboard.escapeHtml(branch)}</div>`;
+        return;
+      }
+      el.innerHTML = items.map(mr => {
+        const iid = mr.iid;
+        const title = Dashboard.escapeHtml(mr.title || '');
+        const source = Dashboard.escapeHtml(mr.source_branch || '');
+        const jira = mr.jira_key ? Dashboard.escapeHtml(mr.jira_key) : '-';
+        const url = mr.web_url || '#';
+        const deployInfo = mr.deploy_status
+          ? statusBadge(mr.deploy_status)
+          : '<span class="meta">not started</span>';
+        const prepareBtn = mrTab === 'stage'
+          ? `<button type="button" onclick="prepareStageMr(${iid})">Prepare Deploy Request</button>`
+          : '';
+        return `
+          <div class="mr-row">
+            <div class="left">
+              <strong>!${iid}</strong> ${title}
+              <div class="meta">${source} · Jira: ${jira} · ${deployInfo}
+                · <a href="${Dashboard.escapeHtml(url)}" target="_blank" rel="noopener">GitLab ↗</a>
+              </div>
+            </div>
+            <div>${prepareBtn}</div>
+          </div>`;
+      }).join('');
+    }
+
+    async function loadOpenMrs() {
+      try {
+        const res = await fetch(`${API}/api/v1/deploy-requests/open-mrs?limit=40`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to load open MRs');
+        openMrs = data;
+        renderOpenMrs();
+      } catch (err) {
+        document.getElementById('open-mrs-list').innerHTML =
+          `<div class="empty-state">${Dashboard.escapeHtml(err.message || String(err))}</div>`;
+      }
+    }
+
+    async function prepareStageMr(mrIid) {
+      try {
+        const res = await fetch(`${API}/api/v1/deploy-requests/trigger-stage-mr`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mr_iid: mrIid }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Prepare failed');
+        alert(data.message || JSON.stringify(data));
+        await Promise.all([loadOpenMrs(), loadAll()]);
+        if (data.deploy_request_id) openDetail(data.deploy_request_id);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    }
+
+    async function syncFromGitlab() {
+      try {
+        const res = await fetch(`${API}/api/v1/deploy-requests/sync`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Sync failed');
+        alert(data.message || JSON.stringify(data));
+        await Promise.all([loadAll(), loadOpenMrs()]);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    }
+
+    const READY_LIST_LIMIT = 10;
+
+    function paintLists() {
+      // Newest successful Stage pipelines first; cap Ready at 10; History is Published only
+      const ready = allItems.filter(isReadyItem).sort(byNewestPipeline).slice(0, READY_LIST_LIMIT);
+      const published = allItems.filter(isHistoryItem).sort(byNewestPipeline);
+      renderReadyList(ready);
+      renderPublished(published);
+    }
+
+    async function loadAll() {
+      const res = await fetch(`${API}/api/v1/deploy-requests?limit=100`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to load');
+      allItems = data;
+      paintLists();
+      if (selected) {
+        const fresh = allItems.find(r => r.id === selected.id);
+        if (fresh) selected = fresh;
+      }
+    }
+
+    function openDetail(id) {
+      selected = allItems.find(r => r.id === id);
+      if (!selected) return;
+
+      document.getElementById('detail-empty').style.display = 'none';
+      document.getElementById('detail-body').classList.add('visible');
+      document.getElementById('btn-close-detail').style.display = '';
+
+      document.getElementById('detail-title').textContent =
+        `Deploy Request · ${selected.jira_key || selected.version || ('#' + (selected.pipeline_id || selected.id.slice(0,8)))}`;
+      document.getElementById('detail-meta').innerHTML =
+        `Pipeline: <strong>#${selected.pipeline_id || '-'}</strong> · Version: ${Dashboard.escapeHtml(selected.version || '-')}` +
+        (selected.pipeline_url ? ` · <a href="${Dashboard.escapeHtml(selected.pipeline_url)}" target="_blank" rel="noopener">Pipeline ↗</a>` : '') +
+        (selected.mr_url ? ` · <a href="${Dashboard.escapeHtml(selected.mr_url)}" target="_blank" rel="noopener">MR ↗</a>` : '');
+      document.getElementById('fld-jira').value = selected.jira_key || '';
+      document.getElementById('fld-publish-at').value = selected.publish_at || '';
+      document.getElementById('fld-message').value = selected.message_body || '';
+      document.getElementById('detail-error').textContent = '';
+      document.getElementById('auto-fields').innerHTML =
+        `<strong>Jira:</strong> ${Dashboard.escapeHtml(selected.jira_key || '-')} · ` +
+        `<strong>Priority (from Jira):</strong> ${Dashboard.escapeHtml(selected.priority || '-')} · ` +
+        `<strong>Version (from pipeline tag):</strong> ${Dashboard.escapeHtml(selected.version || '-')}`;
+
+      const needsJira = selected.status === 'needs_jira' || !selected.jira_key;
+      const canGenerate = selected.status === 'pipeline_ready' || selected.status === 'needs_jira';
+      const canSend = selected.status === 'waiting_approval' || selected.status === 'draft';
+      document.getElementById('row-jira').style.display = needsJira ? '' : 'none';
+      document.getElementById('btn-assign-jira').style.display = needsJira ? '' : 'none';
+      document.getElementById('btn-generate').style.display = canGenerate ? '' : 'none';
+      document.getElementById('btn-send').style.display = canSend ? '' : 'none';
+      document.getElementById('btn-reject').style.display =
+        (selected.status === 'waiting_approval' && selected.hitl_checkpoint_id) ? '' : 'none';
+
+      paintLists();
+    }
+
+    function closeDetail() {
+      selected = null;
+      document.getElementById('detail-empty').style.display = '';
+      document.getElementById('detail-body').classList.remove('visible');
+      document.getElementById('btn-close-detail').style.display = 'none';
+      document.getElementById('detail-title').textContent = 'Deploy Request';
+      paintLists();
+    }
+
+    function draftBody() {
+      const body = {
+        publish_at: document.getElementById('fld-publish-at').value.trim() || null,
+        message_body: document.getElementById('fld-message').value,
+      };
+      const jiraRow = document.getElementById('row-jira');
+      if (jiraRow && jiraRow.style.display !== 'none') {
+        body.jira_key = document.getElementById('fld-jira').value.trim() || null;
+      }
+      return body;
+    }
+
+    async function generateMessage() {
+      if (!selected) return;
+      const jira = document.getElementById('fld-jira').value.trim();
+      if (jira && jira !== (selected.jira_key || '')) {
+        const assignRes = await fetch(`${API}/api/v1/deploy-requests/${selected.id}/assign-jira`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jira_key: jira }),
+        });
+        const assignData = await assignRes.json();
+        if (!assignRes.ok) {
+          document.getElementById('detail-error').textContent = assignData.detail || 'Assign Jira failed';
+          return;
+        }
+        selected = assignData;
+        if (assignData.message_body) {
+          await loadAll();
+          openDetail(assignData.id);
+          return;
+        }
+      }
+      const res = await fetch(`${API}/api/v1/deploy-requests/${selected.id}/generate-message`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('detail-error').textContent = data.detail || 'Generate failed';
+        return;
+      }
+      await loadAll();
+      openDetail(data.id);
+    }
+
+    async function saveDraft() {
+      if (!selected) return;
+      const res = await fetch(`${API}/api/v1/deploy-requests/${selected.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draftBody()),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('detail-error').textContent = data.detail || 'Save failed';
+        return;
+      }
+      await loadAll();
+      openDetail(data.id);
+    }
+
+    async function assignJira() {
+      if (!selected) return;
+      const jira_key = document.getElementById('fld-jira').value.trim();
+      if (!jira_key) {
+        document.getElementById('detail-error').textContent = 'Jira key is required';
+        return;
+      }
+      const res = await fetch(`${API}/api/v1/deploy-requests/${selected.id}/assign-jira`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jira_key }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('detail-error').textContent = data.detail || 'Assign failed';
+        return;
+      }
+      await loadAll();
+      openDetail(data.id);
+    }
+
+    async function sendToMattermost() {
+      if (!selected) return;
+      const body = {
+        publish_at: document.getElementById('fld-publish-at').value.trim() || null,
+        resolved_by: 'tech-lead@dashboard',
+      };
+      const res = await fetch(`${API}/api/v1/deploy-requests/${selected.id}/send-to-mattermost`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('detail-error').textContent = data.detail || 'Send failed';
+        return;
+      }
+      alert('Sent to Mattermost');
+      closeDetail();
+      await loadAll();
+    }
+
+    async function rejectPublish() {
+      if (!selected || !selected.hitl_checkpoint_id) return;
+      const res = await fetch(`${API}/api/v1/hitl/${selected.hitl_checkpoint_id}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reject', resolved_by: 'tech-lead@dashboard' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('detail-error').textContent = data.detail || 'Reject failed';
+        return;
+      }
+      closeDetail();
+      await loadAll();
+    }
+
+    Promise.all([loadAll(), loadOpenMrs()]).catch(err => {
+      document.getElementById('ready-list').innerHTML =
+        `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
+    });
+    Dashboard.connectWebSocket(() => {
+      loadAll().catch(() => {});
+      loadOpenMrs().catch(() => {});
+    });
+  </script>
+</body>
+</html>
