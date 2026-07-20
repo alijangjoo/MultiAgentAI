@@ -12,7 +12,7 @@ class KnowledgeQueryRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     synthesize: bool = Field(
         default=True,
-        description="Use Sage agent to synthesize an answer from retrieved chunks",
+        description="Use Knowledge Agent to synthesize an answer from retrieved chunks",
     )
     context: dict = Field(default_factory=dict)
 

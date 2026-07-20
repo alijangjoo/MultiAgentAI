@@ -21,12 +21,23 @@ def _ensure_chroma_dir(path: str) -> None:
 
 
 def _is_valid_api_key(key: str) -> bool:
-    placeholders = {"", "your-api-key", "mock-key", "changeme"}
-    return bool(key) and key not in placeholders
+    placeholders = {"", "your-api-key", "mock-key", "changeme", "9router", "local"}
+    return bool(key) and key.strip().lower() not in placeholders
+
+
+def _prefer_local_embeddings(settings) -> bool:
+    """Use Chroma default EF for local proxies (e.g. 9Router) that may not support embeddings."""
+    key = (settings.llm_api_key or "").strip().lower()
+    base = (settings.llm_base_url or "").lower()
+    if key in {"9router", "local"}:
+        return True
+    return "127.0.0.1" in base or "localhost" in base
 
 
 def _build_embedding_function():
     settings = get_settings()
+    if _prefer_local_embeddings(settings):
+        return embedding_functions.DefaultEmbeddingFunction()
     if _is_valid_api_key(settings.llm_api_key):
         return embedding_functions.OpenAIEmbeddingFunction(
             api_key=settings.llm_api_key,
@@ -116,11 +127,25 @@ class ChromaKnowledgeStore:
         )
         self._collections: dict[str, Any] = {}
         for name in ALL_COLLECTIONS:
-            self._collections[name] = self._client.get_or_create_collection(
+            self._collections[name] = self._open_collection(name)
+
+    def _open_collection(self, name: str):
+        """Open or create a collection; tolerate persisted embedding-function mismatches."""
+        try:
+            return self._client.get_or_create_collection(
                 name=name,
                 embedding_function=self._embedding_fn,
                 metadata={"label": COLLECTION_LABELS.get(name, name)},
             )
+        except ValueError:
+            # Collection exists with a different embedding function config.
+            try:
+                return self._client.get_collection(
+                    name=name,
+                    embedding_function=self._embedding_fn,
+                )
+            except ValueError:
+                return self._client.get_collection(name=name)
 
     def _collection(self, name: str):
         if name not in self._collections:
@@ -154,9 +179,10 @@ class ChromaKnowledgeStore:
         source: str | None = None,
         task_key: str | None = None,
         doc_id: str | None = None,
+        split: bool = True,
     ) -> dict[str, Any]:
         doc_id = doc_id or str(uuid.uuid4())
-        chunks = self._splitter.split_text(content)
+        chunks = self._splitter.split_text(content) if split else [content]
         if not chunks:
             chunks = [content]
 
@@ -177,6 +203,31 @@ class ChromaKnowledgeStore:
         ]
         col.add(ids=chunk_ids, documents=chunks, metadatas=metadatas)
         return {"id": doc_id, "chunks_created": len(chunks)}
+
+    def upsert_document(
+        self,
+        collection: str,
+        title: str,
+        content: str,
+        *,
+        doc_id: str,
+        tags: list[str] | None = None,
+        source: str | None = None,
+        task_key: str | None = None,
+        split: bool = True,
+    ) -> dict[str, Any]:
+        """Atomically replace a logical document while keeping its stable id."""
+        self.delete_document(doc_id)
+        return self.ingest(
+            collection=collection,
+            title=title,
+            content=content,
+            tags=tags,
+            source=source,
+            task_key=task_key,
+            doc_id=doc_id,
+            split=split,
+        )
 
     def query(
         self,
@@ -249,12 +300,33 @@ class ChromaKnowledgeStore:
             data = col.get(where={"doc_id": doc_id}, include=["documents", "metadatas"])
             if not data.get("ids"):
                 continue
-            chunks: list[str] = []
-            meta = data["metadatas"][0] if data.get("metadatas") else {}
+            rows: list[tuple[int, str, dict[str, Any]]] = []
             for i, chunk_id in enumerate(data["ids"]):
                 content = data["documents"][i] if data.get("documents") else ""
-                chunks.append(content)
-            full_content = "\n\n".join(chunks)
+                row_meta = (
+                    data["metadatas"][i]
+                    if data.get("metadatas") and data["metadatas"][i]
+                    else {}
+                )
+                rows.append((int(row_meta.get("chunk_index") or 0), content, row_meta))
+            rows.sort(key=lambda row: row[0])
+            chunks = [row[1] for row in rows]
+            meta = rows[0][2] if rows else {}
+            full_content = ""
+            for chunk in chunks:
+                if not full_content:
+                    full_content = chunk
+                    continue
+                max_overlap = min(300, len(full_content), len(chunk))
+                overlap = 0
+                for size in range(max_overlap, 0, -1):
+                    if full_content.endswith(chunk[:size]):
+                        overlap = size
+                        break
+                if overlap:
+                    full_content += chunk[overlap:]
+                else:
+                    full_content += "\n\n" + chunk
             return {
                 "id": doc_id,
                 "collection": name,
@@ -301,9 +373,11 @@ class ChromaKnowledgeStore:
             "total_chunks": total_chunks,
             "collections": collection_counts,
             "chroma_path": str(Path(self._path).resolve()),
-            "embedding_model": settings.embedding_model
-            if _is_valid_api_key(settings.llm_api_key)
-            else "default-local (all-MiniLM-L6-v2)",
+            "embedding_model": (
+                "default-local (all-MiniLM-L6-v2)"
+                if _prefer_local_embeddings(settings) or not _is_valid_api_key(settings.llm_api_key)
+                else settings.embedding_model
+            ),
         }
 
 

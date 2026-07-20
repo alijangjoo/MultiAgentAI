@@ -135,6 +135,13 @@ def create_app() -> FastAPI:
             return FileResponse(str(page), media_type="text/html")
         return {"error": "Knowledge dashboard not found", "expected_path": str(page)}
 
+    @app.get("/dashboard/review", include_in_schema=False)
+    async def review_dashboard():
+        page = DASHBOARD_DIR / "review.html"
+        if page.exists():
+            return FileResponse(str(page), media_type="text/html")
+        return {"error": "Review dashboard not found", "expected_path": str(page)}
+
     @app.get("/health")
     async def health():
         return {
@@ -142,6 +149,7 @@ def create_app() -> FastAPI:
             "env": settings.app_env,
             "dashboard": str(DASHBOARD_DIR),
             "dashboard_exists": DASHBOARD_DIR.exists(),
+            "project_dotnet_version": settings.project_dotnet_version,
         }
 
     return app

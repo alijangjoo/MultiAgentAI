@@ -12,13 +12,24 @@ from slices.knowledge.rag.vector_store import get_knowledge_store
 
 
 def _classify_gitlab_path(path: str) -> str:
-    lower = path.lower()
+    lower = path.lower().replace("\\", "/")
+    name = lower.rsplit("/", 1)[-1]
+    if name.endswith("_ul.md"):
+        return KnowledgeCollection.UBIQUITOUS_LANGUAGE.value
+    if "/review-rules/" in lower or name.startswith("sentinel_review"):
+        return KnowledgeCollection.REVIEW_RULES.value
+    if "/code-specs/" in lower or "code_specs" in name:
+        return KnowledgeCollection.CODE_SPECS.value
     if "/adr/" in lower or lower.startswith("docs/adr"):
         return KnowledgeCollection.ADR.value
-    if "/ul/" in lower or "api" in lower:
-        return KnowledgeCollection.API_REFERENCE.value
+    if "/architecture" in lower or "/specs/" in lower:
+        return KnowledgeCollection.ARCHITECTURE_SPEC.value
+    if "/ul/" in lower or "ubiquitous" in lower:
+        return KnowledgeCollection.UBIQUITOUS_LANGUAGE.value
     if lower.endswith(".cs"):
         return KnowledgeCollection.CODE_PATTERNS.value
+    if "api" in lower and lower.endswith(".md"):
+        return KnowledgeCollection.API_REFERENCE.value
     return KnowledgeCollection.BEST_PRACTICES.value
 
 
@@ -142,7 +153,7 @@ class KnowledgeIngestService:
         )
         await self._run_repo.update_run(run_id, status=RunStatus.RUNNING)
 
-        root = Path(docs_root) if docs_root else Path(__file__).resolve().parents[3].parent / "docs"
+        root = Path(docs_root) if docs_root else Path(__file__).resolve().parents[4] / "docs"
         docs = 0
         chunks = 0
 
@@ -151,12 +162,20 @@ class KnowledgeIngestService:
                 content = md_file.read_text(encoding="utf-8", errors="ignore")
                 if len(content.strip()) < 20:
                     continue
-                rel = str(md_file.relative_to(root))
-                collection = (
-                    KnowledgeCollection.ADR.value
-                    if "adr" in rel.lower()
-                    else KnowledgeCollection.BEST_PRACTICES.value
-                )
+                rel = str(md_file.relative_to(root)).replace("\\", "/")
+                lower = rel.lower()
+                if lower.endswith("_ul.md") or "/ul/" in lower:
+                    collection = KnowledgeCollection.UBIQUITOUS_LANGUAGE.value
+                elif "review-rules" in lower:
+                    collection = KnowledgeCollection.REVIEW_RULES.value
+                elif "code-specs" in lower:
+                    collection = KnowledgeCollection.CODE_SPECS.value
+                elif "adr" in lower:
+                    collection = KnowledgeCollection.ADR.value
+                elif "specs" in lower or "architecture" in lower:
+                    collection = KnowledgeCollection.ARCHITECTURE_SPEC.value
+                else:
+                    collection = KnowledgeCollection.BEST_PRACTICES.value
                 result = self._store.ingest(
                     collection=collection,
                     title=rel,

@@ -26,6 +26,7 @@ class ForgeOutput(BaseModel):
 class SentinelOutput(BaseModel):
     merge_request: MergeRequestInfo
     review: CodeReviewResult
+    review_prompt: str = ""
 
 
 class ScribeOutput(BaseModel):

@@ -61,7 +61,7 @@ async def cursor_bridge_review(
         "prompt": prompt,
         "mr_changes": mr_changes or [],
         "repo_path": settings.cursor_repo_path,
-        "model": settings.cursor_model,
+        "model": settings.code_review_model or settings.cursor_model,
     }
     async with httpx.AsyncClient(timeout=600.0) as client:
         try:
