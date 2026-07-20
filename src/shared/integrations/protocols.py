@@ -107,7 +107,24 @@ class GitLabClientProtocol(ABC):
         self,
         state: str = "opened",
         limit: int = 50,
+        target_branch: str | None = None,
     ) -> list[dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def get_merge_request_pipeline_status(self, mr_iid: int) -> dict[str, Any]:
+        pass
+
+    @abstractmethod
+    async def create_merge_request_note(self, mr_iid: int, body: str) -> dict[str, Any]:
+        pass
+
+    @abstractmethod
+    async def accept_merge_request(
+        self,
+        mr_iid: int,
+        merge_commit_message: str | None = None,
+    ) -> dict[str, Any]:
         pass
 
     @abstractmethod

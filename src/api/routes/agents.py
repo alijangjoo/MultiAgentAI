@@ -176,6 +176,7 @@ async def resolve_hitl_checkpoint(checkpoint_id: str, request: HITLResolveReques
         raise HTTPException(status_code=400, detail="Checkpoint already resolved")
 
     is_deploy = checkpoint.checkpoint_name == "deploy_request_approval"
+    is_mr_review = checkpoint.checkpoint_name == "mr_review_approval"
 
     await _hitl_repo.resolve_checkpoint(
         checkpoint_id=checkpoint_id,
@@ -198,6 +199,34 @@ async def resolve_hitl_checkpoint(checkpoint_id: str, request: HITLResolveReques
                     action=request.action,
                     pipeline_status=deploy_req.status.value,
                     message="Deploy Request approved and published to Mattermost.",
+                )
+
+            if is_mr_review:
+                from api.services.gitlab_mr_service import GitLabMRService
+
+                mr_iid = int(checkpoint.context.get("mr_iid") or 0)
+                if not mr_iid:
+                    raise ValueError("HITL checkpoint missing mr_iid")
+                merge_result = await GitLabMRService().merge_after_hitl(
+                    run_id=checkpoint.run_id,
+                    mr_iid=mr_iid,
+                    merged_by=request.resolved_by,
+                )
+                await _run_repo.update_run(
+                    checkpoint.run_id,
+                    status=RunStatus.COMPLETED,
+                    output_payload={
+                        **(checkpoint.context or {}),
+                        "merged": True,
+                        "merge_result": merge_result,
+                    },
+                )
+                return HITLResolveResponse(
+                    checkpoint_id=checkpoint_id,
+                    run_id=checkpoint.run_id,
+                    action=request.action,
+                    pipeline_status="merged",
+                    message=merge_result.get("message", "MR merged"),
                 )
 
             state = await _get_feature_orchestrator().complete_after_merge(
@@ -227,6 +256,20 @@ async def resolve_hitl_checkpoint(checkpoint_id: str, request: HITLResolveReques
             action=request.action,
             pipeline_status="cancelled",
             message=f"Deploy Request {request.action.value}.",
+        )
+
+    if is_mr_review:
+        await _run_repo.update_run(checkpoint.run_id, status=RunStatus.COMPLETED)
+        return HITLResolveResponse(
+            checkpoint_id=checkpoint_id,
+            run_id=checkpoint.run_id,
+            action=request.action,
+            pipeline_status="review_pending",
+            message=(
+                "Developer should fix findings and click Review again."
+                if request.action == HITLAction.REQUEST_CHANGES
+                else f"MR review {request.action.value}."
+            ),
         )
 
     await _run_repo.update_run(checkpoint.run_id, status=RunStatus.CANCELLED)

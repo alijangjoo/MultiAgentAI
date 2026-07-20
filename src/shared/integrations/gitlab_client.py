@@ -87,10 +87,49 @@ class MockGitLabClient(GitLabClientProtocol):
 
     async def get_merge_request(self, mr_iid: int) -> dict[str, Any]:
         self._ensure_seed()
-        return self._merge_requests.get(
+        mr = self._merge_requests.get(
             mr_iid,
             {"iid": mr_iid, "state": "opened", "web_url": f"https://gitlab.local/mr/{mr_iid}"},
         )
+        return {
+            **mr,
+            "has_conflicts": mr.get("has_conflicts", False),
+            "merge_status": mr.get("merge_status", "can_be_merged"),
+            "detailed_merge_status": mr.get("detailed_merge_status", "mergeable"),
+            "sha": mr.get("sha", "mocksha"),
+        }
+
+    async def get_merge_request_pipeline_status(self, mr_iid: int) -> dict[str, Any]:
+        mr = await self.get_merge_request(mr_iid)
+        return {
+            "status": "success",
+            "pipeline_id": 9001,
+            "sha": mr.get("sha"),
+            "web_url": "https://gitlab.company.local/project/-/pipelines/9001",
+        }
+
+    async def create_merge_request_note(self, mr_iid: int, body: str) -> dict[str, Any]:
+        return {"mr_iid": mr_iid, "body": body[:200], "created": True, "id": 1000 + mr_iid}
+
+    async def accept_merge_request(
+        self,
+        mr_iid: int,
+        merge_commit_message: str | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_seed()
+        mr = self._merge_requests.get(mr_iid)
+        if not mr:
+            raise ValueError(f"MR !{mr_iid} not found")
+        if mr.get("has_conflicts"):
+            raise ValueError(f"MR !{mr_iid} has merge conflicts")
+        mr["state"] = "merged"
+        mr["merge_commit_sha"] = "merged-mock-sha"
+        return {
+            "iid": mr_iid,
+            "state": "merged",
+            "merge_commit_sha": mr["merge_commit_sha"],
+            "message": merge_commit_message or f"Merged MR !{mr_iid}",
+        }
 
     async def list_merge_requests(
         self,
@@ -497,6 +536,12 @@ class RealGitLabClient(GitLabClientProtocol):
             "target_branch": mr.target_branch,
             "sha": getattr(mr, "sha", None),
             "merge_commit_sha": getattr(mr, "merge_commit_sha", None),
+            "has_conflicts": bool(getattr(mr, "has_conflicts", False)),
+            "merge_status": getattr(mr, "merge_status", None),
+            "detailed_merge_status": getattr(mr, "detailed_merge_status", None),
+            "author": getattr(getattr(mr, "author", None), "username", None),
+            "created_at": getattr(mr, "created_at", None),
+            "updated_at": getattr(mr, "updated_at", None),
         }
 
     async def get_merge_request(self, mr_iid: int) -> dict[str, Any]:
@@ -581,6 +626,78 @@ class RealGitLabClient(GitLabClientProtocol):
 
     async def get_merge_request_changes(self, mr_iid: int) -> list[dict[str, Any]]:
         return await run_sync(self._get_mr_changes_sync, mr_iid)
+
+    def _get_mr_pipeline_status_sync(self, mr_iid: int) -> dict[str, Any]:
+        self._ensure_connected()
+        assert self._project is not None
+        mr = self._project.mergerequests.get(mr_iid)
+        sha = getattr(mr, "sha", None)
+        head_pipeline = getattr(mr, "head_pipeline", None)
+        if head_pipeline is not None:
+            return {
+                "status": getattr(head_pipeline, "status", None),
+                "pipeline_id": getattr(head_pipeline, "id", None),
+                "sha": sha,
+                "web_url": getattr(head_pipeline, "web_url", None),
+            }
+        if sha:
+            pipelines = self._project.pipelines.list(sha=sha, per_page=5, order_by="id", sort="desc")
+            if pipelines:
+                p = pipelines[0]
+                return {
+                    "status": p.status,
+                    "pipeline_id": p.id,
+                    "sha": sha,
+                    "web_url": p.web_url,
+                }
+        return {"status": None, "pipeline_id": None, "sha": sha, "web_url": None}
+
+    async def get_merge_request_pipeline_status(self, mr_iid: int) -> dict[str, Any]:
+        return await run_sync(self._get_mr_pipeline_status_sync, mr_iid)
+
+    def _create_mr_note_sync(self, mr_iid: int, body: str) -> dict[str, Any]:
+        self._ensure_connected()
+        assert self._project is not None
+        mr = self._project.mergerequests.get(mr_iid)
+        note = mr.notes.create({"body": body})
+        return {
+            "id": getattr(note, "id", None),
+            "mr_iid": mr_iid,
+            "body": body[:500],
+            "created": True,
+        }
+
+    async def create_merge_request_note(self, mr_iid: int, body: str) -> dict[str, Any]:
+        return await run_sync(self._create_mr_note_sync, mr_iid, body)
+
+    def _accept_mr_sync(self, mr_iid: int, merge_commit_message: str | None) -> dict[str, Any]:
+        self._ensure_connected()
+        assert self._project is not None
+        mr = self._project.mergerequests.get(mr_iid)
+        if getattr(mr, "has_conflicts", False):
+            raise ValueError(f"MR !{mr_iid} has merge conflicts")
+        merge_status = getattr(mr, "merge_status", None)
+        detailed = getattr(mr, "detailed_merge_status", None)
+        if merge_status == "cannot_be_merged" or detailed in ("conflict", "not_mergeable"):
+            raise ValueError(f"MR !{mr_iid} cannot be merged (status={merge_status}, detailed={detailed})")
+        kwargs: dict[str, Any] = {}
+        if merge_commit_message:
+            kwargs["merge_commit_message"] = merge_commit_message
+        mr.merge(**kwargs)
+        mr.refresh()
+        return {
+            "iid": mr.iid,
+            "state": mr.state,
+            "merge_commit_sha": getattr(mr, "merge_commit_sha", None),
+            "web_url": mr.web_url,
+        }
+
+    async def accept_merge_request(
+        self,
+        mr_iid: int,
+        merge_commit_message: str | None = None,
+    ) -> dict[str, Any]:
+        return await run_sync(self._accept_mr_sync, mr_iid, merge_commit_message)
 
     def _list_repository_files_sync(
         self,

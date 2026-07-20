@@ -11,9 +11,10 @@ Dashboard.escapeHtml = function(text) {
 Dashboard.NAV_ITEMS = [
   { href: '/', label: 'Home', page: 'home' },
   { href: '/dashboard/develop', label: 'Develop', page: 'develop' },
+  { href: '/dashboard/review', label: 'Review', page: 'review' },
   { href: '/dashboard/pipelines', label: 'Pipelines', page: 'pipelines' },
   { href: '/dashboard/deploy-requests', label: 'Deploy Request', page: 'deploy-requests' },
-  { href: '/dashboard/knowledge', label: 'Sage', page: 'knowledge' },
+  { href: '/dashboard/knowledge', label: 'Knowledge Agent', page: 'knowledge' },
 ];
 
 Dashboard.SETTINGS_NAV = [

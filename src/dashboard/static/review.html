@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sentinel — Code Review</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    .workspace { display: grid; grid-template-columns: 4fr 8fr; gap: 1rem; align-items: start; }
+    @media (max-width: 960px) { .workspace { grid-template-columns: 1fr; } }
+    .mr-tabs { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .mr-tabs button.active { outline: 1px solid var(--accent, #10b981); }
+    .mr-row {
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 0;
+      cursor: pointer;
+    }
+    .mr-row:hover { background: rgba(255,255,255,0.03); }
+    .mr-row.active { background: rgba(16,185,129,0.08); outline: 1px solid rgba(16,185,129,0.35); border-radius: 6px; padding: 0.75rem; }
+    .review-box {
+      white-space: pre-wrap;
+      font-family: ui-monospace, monospace;
+      font-size: 0.82rem;
+      background: rgba(0,0,0,0.25);
+      padding: 0.75rem;
+      border-radius: 6px;
+      max-height: 420px;
+      overflow: auto;
+    }
+    .review-section { margin-top: 0.85rem; }
+    .review-section h4 {
+      margin: 0 0 0.4rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .review-section .meta { margin-bottom: 0.35rem; }
+    .hitl-item { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin-bottom: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="stats-grid" style="margin-bottom:1rem">
+      <div class="stat-card"><div class="label">Dev MRs</div><div class="value" id="kpi-dev">0</div></div>
+      <div class="stat-card"><div class="label">Stage MRs</div><div class="value" id="kpi-stage">0</div></div>
+      <div class="stat-card"><div class="label">Main MRs</div><div class="value" id="kpi-prod">0</div></div>
+      <div class="stat-card"><div class="label">HITL Pending</div><div class="value" id="kpi-hitl">0</div></div>
+      <div class="stat-card"><div class="label">.NET Version</div><div class="value" id="kpi-dotnet" style="font-size:1rem">8</div></div>
+    </div>
+
+    <div class="workspace">
+      <div class="panel">
+        <div class="panel-header">
+          <span>Open Merge Requests</span>
+          <button class="secondary" type="button" onclick="loadMrs()">Refresh</button>
+        </div>
+        <div class="panel-body padded">
+          <div class="mr-tabs">
+            <button type="button" class="secondary active" id="tab-dev" onclick="showTab('dev')">Dev</button>
+            <button type="button" class="secondary" id="tab-stage" onclick="showTab('stage')">Stage</button>
+            <button type="button" class="secondary" id="tab-production" onclick="showTab('production')">Main</button>
+          </div>
+          <div class="meta" id="branch-meta" style="margin-bottom:0.5rem">—</div>
+          <div id="mr-list"><div class="empty-state">Loading...</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span id="detail-title">MR Detail</span>
+          <a id="mr-link" href="#" target="_blank" class="meta" style="display:none">GitLab →</a>
+        </div>
+        <div class="panel-body padded">
+          <div id="detail-empty" class="empty-state">Select a merge request</div>
+          <div id="detail-body" style="display:none">
+            <div class="meta" id="detail-meta"></div>
+            <div style="margin:0.75rem 0;display:flex;flex-wrap:wrap;gap:0.5rem" id="status-badges"></div>
+            <div class="toolbar" style="margin-bottom:0.75rem">
+              <button type="button" id="btn-review" onclick="reviewMr()">Review</button>
+              <button type="button" class="secondary" id="btn-merge" onclick="mergeMr()">Merge</button>
+              <button type="button" class="secondary" onclick="refreshMrStatus()">Refresh Status</button>
+            </div>
+            <p class="meta" style="margin-bottom:0.5rem">
+              Review builds a Knowledge Package (PRD, ADR, Specs, Rules) + GitLab diff, then sends that context via 9Router (OpenCode Free).
+              Conflicts block review. Merge requires green pipeline.
+            </p>
+            <div id="review-panels" style="display:none">
+              <div class="review-section">
+                <h4>Review Context (sent)</h4>
+                <div class="meta" id="review-context-meta">—</div>
+                <div id="review-context" class="review-box"></div>
+              </div>
+              <div class="review-section">
+                <h4>Review Response</h4>
+                <div class="meta" id="review-response-meta">—</div>
+                <div id="review-result" class="review-box"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <div class="panel-header"><span>Pending Review Approvals (HITL)</span></div>
+      <div class="panel-body padded" id="hitl-list"><div class="empty-state">None</div></div>
+    </div>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Sentinel', 'Code Review · MR by environment · Cursor / 9Router', 'review');
+    const API = Dashboard.API;
+    let mrData = { dev: [], stage: [], production: [], branches: {} };
+    let tab = 'dev';
+    let selected = null;
+
+    function showTab(name) {
+      tab = name;
+      ['dev', 'stage', 'production'].forEach(t => {
+        const btn = document.getElementById(`tab-${t}`);
+        if (btn) btn.classList.toggle('active', t === name);
+      });
+      renderList();
+    }
+
+    function envLabel(env) {
+      if (env === 'production') return 'Main';
+      return env.charAt(0).toUpperCase() + env.slice(1);
+    }
+
+    function renderList() {
+      const items = mrData[tab] || [];
+      const branch = (mrData.branches || {})[tab] || '—';
+      document.getElementById('branch-meta').textContent = `Target branch: ${branch}`;
+      document.getElementById('kpi-dev').textContent = (mrData.dev || []).length;
+      document.getElementById('kpi-stage').textContent = (mrData.stage || []).length;
+      document.getElementById('kpi-prod').textContent = (mrData.production || []).length;
+
+      const el = document.getElementById('mr-list');
+      if (!items.length) {
+        el.innerHTML = `<div class="empty-state">No open MRs targeting ${branch}</div>`;
+        return;
+      }
+      el.innerHTML = items.map(mr => {
+        const conflict = mr.has_conflicts ? '<span class="badge failed">conflict</span>' : '';
+        const pipe = mr.pipeline_status
+          ? `<span class="badge ${mr.pipeline_status === 'success' ? 'completed' : 'running'}">${Dashboard.escapeHtml(mr.pipeline_status)}</span>`
+          : '<span class="meta">no pipeline</span>';
+        const active = selected && selected.iid === mr.iid ? 'active' : '';
+        return `
+          <div class="mr-row ${active}" onclick="selectMr(${mr.iid})">
+            <div><strong>!${mr.iid}</strong> ${Dashboard.escapeHtml(mr.title)}</div>
+            <div class="meta">${Dashboard.escapeHtml(mr.source_branch)} → ${Dashboard.escapeHtml(mr.target_branch)}</div>
+            <div style="margin-top:0.35rem">${conflict} ${pipe} ${mr.jira_key ? `<span class="meta">${mr.jira_key}</span>` : ''}</div>
+          </div>`;
+      }).join('');
+    }
+
+    async function loadMrs() {
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/by-environment`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        mrData = data;
+        if (selected) {
+          const all = [...(data.dev||[]), ...(data.stage||[]), ...(data.production||[])];
+          selected = all.find(m => m.iid === selected.iid) || selected;
+        }
+        renderList();
+        if (selected) renderDetail();
+      } catch (err) {
+        document.getElementById('mr-list').innerHTML = `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function selectMr(iid) {
+      const items = mrData[tab] || [];
+      selected = items.find(m => m.iid === iid) || selected;
+      renderList();
+      renderDetail();
+    }
+
+    function renderDetail() {
+      const empty = document.getElementById('detail-empty');
+      const body = document.getElementById('detail-body');
+      if (!selected) {
+        empty.style.display = 'block';
+        body.style.display = 'none';
+        return;
+      }
+      empty.style.display = 'none';
+      body.style.display = 'block';
+      document.getElementById('detail-title').textContent = `MR !${selected.iid}`;
+      const link = document.getElementById('mr-link');
+      link.href = selected.web_url || '#';
+      link.style.display = selected.web_url ? 'inline' : 'none';
+      document.getElementById('detail-meta').textContent =
+        `${selected.source_branch} → ${selected.target_branch}` +
+        (selected.author ? ` · ${selected.author}` : '');
+
+      const badges = [];
+      if (selected.has_conflicts) badges.push('<span class="badge failed">Merge conflicts</span>');
+      else badges.push('<span class="badge completed">No conflicts</span>');
+      if (selected.pipeline_status) {
+        const ok = selected.pipeline_status === 'success';
+        badges.push(`<span class="badge ${ok ? 'completed' : 'running'}">Pipeline: ${Dashboard.escapeHtml(selected.pipeline_status)}</span>`);
+      } else {
+        badges.push('<span class="badge pending">Pipeline: unknown</span>');
+      }
+      if (selected.pending_hitl_id) badges.push('<span class="badge running">HITL pending</span>');
+      document.getElementById('status-badges').innerHTML = badges.join(' ');
+
+      document.getElementById('btn-review').disabled = !!selected.has_conflicts;
+      document.getElementById('btn-merge').disabled = !!selected.has_conflicts;
+      document.getElementById('review-panels').style.display = 'none';
+      document.getElementById('review-context').textContent = '';
+      document.getElementById('review-result').textContent = '';
+      document.getElementById('review-context-meta').textContent = '—';
+      document.getElementById('review-response-meta').textContent = '—';
+    }
+
+    function showReviewPanels({ contextText, contextMeta, responseText, responseMeta }) {
+      const panels = document.getElementById('review-panels');
+      panels.style.display = 'block';
+      document.getElementById('review-context-meta').textContent = contextMeta || '—';
+      document.getElementById('review-response-meta').textContent = responseMeta || '—';
+      document.getElementById('review-context').textContent = contextText || '(empty)';
+      document.getElementById('review-result').textContent = responseText || '(empty)';
+    }
+
+    async function refreshMrStatus() {
+      if (!selected) return;
+      const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/status`);
+      const data = await res.json();
+      if (res.ok) Object.assign(selected, data);
+      await loadMrs();
+    }
+
+    async function reviewMr() {
+      if (!selected) return;
+      if (selected.has_conflicts) { alert('Cannot review: MR has conflicts'); return; }
+      if (!confirm(`Run Sentinel review for MR !${selected.iid}?`)) return;
+      const btn = document.getElementById('btn-review');
+      btn.disabled = true;
+      btn.textContent = 'Reviewing...';
+
+      let preparedPrompt = '';
+      showReviewPanels({
+        contextText: 'Loading Task PRD + Code Specs + Codebase context...',
+        contextMeta: `MR !${selected.iid} · loading context`,
+        responseText: 'Waiting until context is ready...',
+        responseMeta: 'preparing',
+      });
+
+      try {
+        const ctxRes = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/review-context`);
+        const ctxData = await ctxRes.json();
+        if (!ctxRes.ok) {
+          throw new Error(typeof ctxData.detail === 'string' ? ctxData.detail : JSON.stringify(ctxData.detail));
+        }
+        preparedPrompt = ctxData.review_prompt || '';
+        const sectionFlags = ctxData.sections || {};
+        const sectionLabel = [
+          sectionFlags.task_prd ? 'Task PRD' : null,
+          sectionFlags.code_specs ? 'Code Specs' : null,
+          sectionFlags.architecture_specs ? 'Architecture Specs' : null,
+          sectionFlags.codebase ? 'Codebase' : null,
+          sectionFlags.review_rules ? 'Review Rules' : null,
+        ].filter(Boolean).join(' / ') || 'sections unknown';
+        showReviewPanels({
+          contextText: preparedPrompt || '(empty context)',
+          contextMeta: `MR !${selected.iid} · ${Number(ctxData.prompt_chars || preparedPrompt.length).toLocaleString()} chars ready · ${sectionLabel}`,
+          responseText: 'Context ready. Sending to 9Router for review...',
+          responseMeta: 'sending',
+        });
+
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewed_by: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+        const review = data.review || {};
+        const prompt = data.review_prompt || preparedPrompt || '';
+        const fmtItems = (items, bullet) => {
+          const list = Array.isArray(items) ? items : [];
+          if (!list.length) return [`${bullet} None`];
+          return list.map(item => {
+            if (typeof item === 'string') return `${bullet} ${item}`;
+            try { return `${bullet} ${JSON.stringify(item)}`; } catch (_) { return `${bullet} ${String(item)}`; }
+          });
+        };
+        const responseText = [
+          data.message || '',
+          '',
+          `Approved: ${review.approved}`,
+          review.summary || '',
+          '',
+          'Findings:',
+          ...fmtItems(review.findings, '•'),
+          '',
+          'Suggestions:',
+          ...fmtItems(review.suggestions, '↳'),
+        ].join('\n');
+        showReviewPanels({
+          contextText: prompt || '(prompt empty)',
+          contextMeta: `MR !${selected.iid} · ${prompt.length.toLocaleString()} chars sent · ${sectionLabel}`,
+          responseText,
+          responseMeta: `${data.status || 'done'}${data.note_posted ? ' · GitLab note posted' : ''}`,
+        });
+        await loadMrs();
+        await loadHitl();
+      } catch (err) {
+        showReviewPanels({
+          contextText: preparedPrompt || '(context not available)',
+          contextMeta: `MR !${selected.iid} · failed`,
+          responseText: `Error: ${err.message}`,
+          responseMeta: 'error',
+        });
+        alert(err.message);
+      } finally {
+        btn.disabled = !!selected?.has_conflicts;
+        btn.textContent = 'Review';
+      }
+    }
+
+    async function mergeMr() {
+      if (!selected) return;
+      if (!confirm(`Merge MR !${selected.iid}? Pipeline must be successful.`)) return;
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/merge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ merged_by: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Merge failed');
+        alert(data.message);
+        selected = null;
+        await loadMrs();
+        renderDetail();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function loadHitl() {
+      const res = await fetch(`${API}/api/v1/hitl/pending`);
+      const items = await res.json();
+      const mrItems = (items || []).filter(cp => cp.checkpoint_name === 'mr_review_approval');
+      document.getElementById('kpi-hitl').textContent = mrItems.length;
+      const el = document.getElementById('hitl-list');
+      if (!mrItems.length) {
+        el.innerHTML = '<div class="empty-state">No pending review approvals</div>';
+        return;
+      }
+      el.innerHTML = mrItems.map(cp => {
+        const ctx = cp.context || {};
+        const approved = ctx.approved ? 'Approved' : 'Changes Requested';
+        return `
+          <div class="hitl-item">
+            <strong>MR !${ctx.mr_iid || '?'}</strong> — ${Dashboard.escapeHtml(approved)}
+            <div class="meta">${Dashboard.escapeHtml(cp.description || '')}</div>
+            <div class="toolbar" style="margin-top:0.5rem">
+              <button onclick="resolveHitl('${cp.id}', 'approve')">Approve &amp; Merge</button>
+              <button class="secondary" onclick="resolveHitl('${cp.id}', 'request_changes')">Request Changes</button>
+              <button class="secondary" onclick="resolveHitl('${cp.id}', 'reject')">Reject</button>
+              ${ctx.merge_request_url ? `<a href="${ctx.merge_request_url}" target="_blank" class="meta">GitLab</a>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    async function resolveHitl(id, action) {
+      const res = await fetch(`${API}/api/v1/hitl/${id}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, resolved_by: 'tech-lead@company.local' }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'HITL failed'); return; }
+      alert(data.message);
+      await loadHitl();
+      await loadMrs();
+    }
+
+    async function loadDotnetVersion() {
+      try {
+        const res = await fetch(`${API}/health`);
+        const data = await res.json();
+        const v = data.project_dotnet_version || '8';
+        document.getElementById('kpi-dotnet').textContent = v;
+      } catch (_) {}
+    }
+
+    loadMrs();
+    loadHitl();
+    loadDotnetVersion();
+    setInterval(loadHitl, 30000);
+  </script>
+</body>
+</html>

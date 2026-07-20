@@ -99,7 +99,7 @@
       <span class="agent-chip">Sentinel - Code Reviewer (MR Review)</span>
       <span class="agent-chip">Meridian - Product Manager</span>
       <span class="agent-chip">Scribe - Documentation</span>
-      <span class="agent-chip">Sage - Knowledge Agent (ChromaDB)</span>
+      <span class="agent-chip">Knowledge Agent (ChromaDB)</span>
       <span class="agent-chip">Aegis - Incident Analyst</span>
     </div>
 
@@ -132,92 +132,37 @@
       </div>
     </div>
 
-    <!-- GitLab Merge Requests Panel -->
+    <!-- Sentinel — dedicated Review Agent tab -->
     <div class="panel" id="sentinel">
       <div class="panel-header">
-        <span>GitLab Merge Requests</span>
-        <div class="toolbar">
-          <select id="mr-state-filter">
-            <option value="opened">Opened</option>
-            <option value="merged">Merged</option>
-            <option value="closed">Closed</option>
-            <option value="all">All</option>
-          </select>
-          <button class="secondary" onclick="loadMergeRequests()">Refresh</button>
-        </div>
+        <span>Sentinel Code Review</span>
       </div>
-      <div class="panel-body" id="mr-list">
-        <div class="empty-state">Loading merge requests...</div>
+      <div style="padding:1rem 1.25rem">
+        <p class="meta" style="margin:0 0 0.75rem">
+          MR review by Dev / Stage / Main, Knowledge package validation, Cursor review, GitLab comments, and HITL merge.
+        </p>
+        <a href="/dashboard/review" style="color:#042f2e;background:var(--accent,#10b981);padding:0.5rem 0.9rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">
+          Open Review Agent →
+        </a>
       </div>
     </div>
 
-    <!-- Sage Knowledge RAG Panel -->
+    <!-- Knowledge Agent — dedicated dashboard -->
     <div class="panel">
       <div class="panel-header">
-        <span>Sage Knowledge Base (ChromaDB RAG)</span>
-        <div class="toolbar">
-          <a href="/dashboard/knowledge" style="color:#10b981;font-size:0.85rem;text-decoration:none">Open Full Monitor →</a>
-          <button class="secondary" onclick="loadKnowledgeStats()">Refresh</button>
-        </div>
+        <span>Knowledge Agent</span>
       </div>
       <div style="padding:1rem 1.25rem">
-        <div class="detail-grid" id="knowledge-stats-grid" style="margin-bottom:1rem"></div>
-
-        <div class="panels" style="margin-bottom:1rem">
-          <div class="branch-form">
-            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Query Knowledge (Sage RAG)</h3>
-            <div class="form-row">
-              <label>Question</label>
-              <input type="text" id="knowledge-query" placeholder="How to implement CQRS command handler?" />
-            </div>
-            <div class="form-row">
-              <label>Collections (optional)</label>
-              <select id="knowledge-query-collections" multiple style="min-height:70px">
-                <option value="code_patterns">Code Patterns</option>
-                <option value="solutions">Solutions</option>
-                <option value="error_patterns">Error Patterns</option>
-                <option value="best_practices">Best Practices</option>
-                <option value="historical_context">Historical Context</option>
-                <option value="api_reference">API Reference</option>
-                <option value="architecture_spec">Architecture Specs (Dizi)</option>
-                <option value="adr">ADR</option>
-              </select>
-            </div>
-            <button onclick="queryKnowledge()">Ask Sage</button>
-            <div class="description-box" id="knowledge-answer" style="margin-top:0.75rem;display:none"></div>
-          </div>
-
-          <div class="branch-form">
-            <h3 style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--muted)">Ingest Document</h3>
-            <div class="form-row">
-              <label>Collection</label>
-              <select id="knowledge-ingest-collection">
-                <option value="code_patterns">Code Patterns Repository</option>
-                <option value="solutions">Solution Database</option>
-                <option value="error_patterns">Error Patterns</option>
-                <option value="best_practices">Best Practices</option>
-                <option value="historical_context">Historical Context</option>
-                <option value="api_reference">API Reference</option>
-                <option value="adr">ADR</option>
-              </select>
-            </div>
-            <div class="form-row"><label>Title</label><input type="text" id="knowledge-ingest-title" /></div>
-            <div class="form-row"><label>Content</label><textarea id="knowledge-ingest-content" rows="4"></textarea></div>
-            <div class="form-row"><label>Tags (comma separated)</label><input type="text" id="knowledge-ingest-tags" placeholder="cqrs,dotnet" /></div>
-            <div class="form-row"><label>Task Key (optional)</label><input type="text" id="knowledge-ingest-task" placeholder="VEN-100" /></div>
-            <button class="secondary" onclick="ingestKnowledge()">Add to Knowledge Base</button>
-          </div>
+        <p class="meta" style="margin:0 0 0.75rem">
+          Vector DB monitoring, Review Rules, Code Specs, Ubiquitous Language (<code>*_UL.md</code>),
+          and the editable Review Prompt live on the Knowledge Agent dashboard.
+        </p>
+        <div class="toolbar">
+          <a href="/dashboard/knowledge" style="color:#042f2e;background:var(--accent,#10b981);padding:0.5rem 0.9rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.85rem">
+            Open Knowledge Agent →
+          </a>
+          <span class="meta">Docs in Knowledge: <strong id="stat-knowledge-summary">0</strong></span>
         </div>
-
-        <h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin:0.75rem 0 0.5rem">Bulk Ingest (Dashboard Commands)</h3>
-        <div class="toolbar" style="margin-bottom:1rem">
-          <button class="secondary" onclick="ingestKnowledgeGitlab()">Ingest GitLab Source</button>
-          <button class="secondary" onclick="ingestKnowledgeConfluence()">Ingest Confluence</button>
-          <button class="secondary" onclick="ingestKnowledgeLocal()">Ingest Local Docs/ADR</button>
-        </div>
-
-        <h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:0.5rem">Documents</h3>
-        <div class="panel-body" id="knowledge-docs-list" style="max-height:240px;border:1px solid var(--border);border-radius:8px"></div>
       </div>
     </div>
 
@@ -736,9 +681,7 @@
 
     connectWebSocket();
     loadJiraTasks();
-    loadMergeRequests();
     loadKnowledgeStats();
-    loadKnowledgeDocs();
 
     function mrStatusBadge(state) {
       if (state === 'opened') return 'running';
@@ -748,6 +691,7 @@
 
     async function loadMergeRequests() {
       const el = document.getElementById('mr-list');
+      if (!el) return;
       const state = document.getElementById('mr-state-filter').value;
       try {
         const res = await fetch(`${API}/api/v1/gitlab/merge-requests?state=${encodeURIComponent(state)}&limit=50`);
@@ -778,7 +722,8 @@
       }
     }
 
-    document.getElementById('mr-state-filter').addEventListener('change', loadMergeRequests);
+    const mrFilter = document.getElementById('mr-state-filter');
+    if (mrFilter) mrFilter.addEventListener('change', loadMergeRequests);
 
     async function reviewMergeRequest(mrIid, title) {
       const sentinelExec = document.getElementById('sentinel-executor').value || 'cursor';
@@ -804,6 +749,7 @@
     function showMrReviewResult(mrIid, title, data) {
       const review = data.review || {};
       const approved = review.approved ? '✅ Approved' : '❌ Changes Requested';
+      const prompt = data.review_prompt || '';
       document.getElementById('mr-review-title').textContent = `MR !${mrIid}`;
       document.getElementById('mr-review-summary').textContent = title;
       document.getElementById('mr-review-result').innerHTML = `
@@ -817,7 +763,11 @@ ${(review.findings || []).map(f => '• ' + escapeHtml(f)).join('\n') || 'None'}
 <strong>Suggestions:</strong>
 ${(review.suggestions || []).map(s => '• ' + escapeHtml(s)).join('\n') || 'None'}
 
-Run ID: ${data.run_id}
+Run ID: ${escapeHtml(data.run_id || '')}
+${prompt ? `
+
+<strong>Review Context (sent · ${prompt.length} chars):</strong>
+<pre style="white-space:pre-wrap;max-height:260px;overflow:auto;font-size:0.8rem;margin-top:0.35rem">${escapeHtml(prompt)}</pre>` : ''}
       `;
       const link = document.getElementById('mr-review-link');
       link.href = data.merge_request_url || '#';
@@ -833,125 +783,22 @@ Run ID: ${data.run_id}
         const res = await fetch(`${API}/api/v1/knowledge/stats`);
         const stats = await res.json();
         if (!res.ok) throw new Error(stats.detail || 'Failed');
-        document.getElementById('stat-knowledge').textContent = stats.total_documents;
-        const grid = document.getElementById('knowledge-stats-grid');
-        grid.innerHTML = Object.entries(stats.collections).map(([k, v]) =>
-          `<div class="detail-item"><label>${k.replace('_',' ')}</label><span>${v} chunks</span></div>`
-        ).join('') + `<div class="detail-item"><label>Total Docs</label><span>${stats.total_documents}</span></div>`;
+        const total = stats.total_documents ?? 0;
+        const el = document.getElementById('stat-knowledge');
+        if (el) el.textContent = total;
+        const summary = document.getElementById('stat-knowledge-summary');
+        if (summary) summary.textContent = total;
       } catch (err) { logEvent(`Knowledge stats error: ${err.message}`); }
     }
 
-    async function loadKnowledgeDocs() {
-      const el = document.getElementById('knowledge-docs-list');
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/documents?limit=30`);
-        const docs = await res.json();
-        if (!docs.length) { el.innerHTML = '<div class="empty-state">No documents yet</div>'; return; }
-        el.innerHTML = docs.map(d => `
-          <div class="task-item">
-            <div><span class="badge todo">${d.collection}</span> <strong>${escapeHtml(d.title)}</strong></div>
-            <div class="meta">${escapeHtml(d.content_preview)}...</div>
-            <div style="margin-top:0.4rem">
-              <button class="secondary" style="padding:0.3rem 0.6rem;font-size:0.75rem" onclick="deleteKnowledgeDoc('${d.id}')">Delete</button>
-            </div>
-          </div>
-        `).join('');
-      } catch (err) { el.innerHTML = `<div class="empty-state">${err.message}</div>`; }
-    }
-
-    async function queryKnowledge() {
-      const question = document.getElementById('knowledge-query').value.trim();
-      if (!question) return;
-      const select = document.getElementById('knowledge-query-collections');
-      const collections = Array.from(select.selectedOptions).map(o => o.value);
-      const body = { question, top_k: 5, synthesize: true };
-      if (collections.length) body.collections = collections;
-
-      const answerEl = document.getElementById('knowledge-answer');
-      answerEl.style.display = 'block';
-      answerEl.textContent = 'Sage is thinking...';
-
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/query`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Query failed');
-        answerEl.textContent = data.answer || JSON.stringify(data.results, null, 2);
-        logEvent(`Sage answered: ${question.slice(0, 50)}...`);
-      } catch (err) {
-        answerEl.textContent = `Error: ${err.message}`;
-      }
-    }
-
-    async function ingestKnowledge() {
-      const collection = document.getElementById('knowledge-ingest-collection').value;
-      const title = document.getElementById('knowledge-ingest-title').value.trim();
-      const content = document.getElementById('knowledge-ingest-content').value.trim();
-      const tags = document.getElementById('knowledge-ingest-tags').value.split(',').map(t => t.trim()).filter(Boolean);
-      const task_key = document.getElementById('knowledge-ingest-task').value.trim() || null;
-      if (!title || !content) { alert('Title and content required'); return; }
-
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/ingest`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection, title, content, tags, task_key }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Ingest failed');
-        logEvent(data.message);
-        document.getElementById('knowledge-ingest-title').value = '';
-        document.getElementById('knowledge-ingest-content').value = '';
-        loadKnowledgeStats();
-        loadKnowledgeDocs();
-      } catch (err) { alert(err.message); }
-    }
-
-    async function deleteKnowledgeDoc(docId) {
-      if (!confirm('Delete this document from knowledge base?')) return;
-      await fetch(`${API}/api/v1/knowledge/documents/${docId}`, { method: 'DELETE' });
-      loadKnowledgeStats();
-      loadKnowledgeDocs();
-      logEvent(`Deleted knowledge doc ${docId}`);
-    }
-
-    async function ingestKnowledgeGitlab() {
-      if (!confirm('Ingest source files from GitLab into ChromaDB?')) return;
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/ingest/gitlab?limit=100`, { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        logEvent(data.message);
-        loadKnowledgeStats();
-        loadKnowledgeDocs();
-        alert(data.message);
-      } catch (err) { alert(err.message); }
-    }
-
-    async function ingestKnowledgeConfluence() {
-      if (!confirm('Ingest Confluence pages into knowledge base?')) return;
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/ingest/confluence?query=API&limit=20`, { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        logEvent(data.message);
-        loadKnowledgeStats();
-        loadKnowledgeDocs();
-        alert(data.message);
-      } catch (err) { alert(err.message); }
-    }
-
-    async function ingestKnowledgeLocal() {
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/ingest/local`, { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        logEvent(data.message);
-        loadKnowledgeStats();
-        loadKnowledgeDocs();
-        alert(data.message);
-      } catch (err) { alert(err.message); }
-    }
+    // Knowledge ingest/query/docs UI lives on /dashboard/knowledge
+    async function loadKnowledgeDocs() { /* moved to Knowledge Agent */ }
+    async function queryKnowledge() { window.location.href = '/dashboard/knowledge'; }
+    async function ingestKnowledge() { window.location.href = '/dashboard/knowledge'; }
+    async function deleteKnowledgeDoc() { window.location.href = '/dashboard/knowledge'; }
+    async function ingestKnowledgeGitlab() { window.location.href = '/dashboard/knowledge'; }
+    async function ingestKnowledgeConfluence() { window.location.href = '/dashboard/knowledge'; }
+    async function ingestKnowledgeLocal() { window.location.href = '/dashboard/knowledge'; }
 
     async function meridianChat() {
       const message = document.getElementById('meridian-message').value.trim();

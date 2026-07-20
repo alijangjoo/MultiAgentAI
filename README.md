@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AgentFramework
 
 Multi-Agent SDLC orchestration platform built with **Python**, **LangGraph**, and **FastAPI**.  
@@ -277,3 +278,6 @@ Built to support your .NET 8 DDD/CQRS architecture:
 - Knowledge Service (Sage + ChromaDB) provides domain/architecture context via RAG
 - Branch naming follows your `Feature/[task]/[description]` convention
 - Mock data includes Contract API and Payment incident examples
+=======
+# MultiAgentAI
+>>>>>>> a74910af99c8cccbc29b1c6cfb46077cac123d5c

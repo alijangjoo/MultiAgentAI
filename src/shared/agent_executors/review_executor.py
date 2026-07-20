@@ -8,24 +8,152 @@ from shared.agent_executors.settings_store import get_agent_executor_settings
 from shared.llm.factory import create_code_review_llm_for_provider
 from shared.models.domain import AgentName, CodeReviewResult, MergeRequestInfo
 from shared.persistence.repository import AgentRunRepository
+from slices.knowledge.review_docs import get_review_docs_service
+from slices.knowledge.review_package import ReviewKnowledgePackage
+
+
+def _item_to_string(item: Any) -> str:
+    if item is None:
+        return ""
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        severity = str(item.get("severity") or item.get("level") or "").strip().upper()
+        path = str(item.get("file") or item.get("path") or item.get("location") or "").strip()
+        line = item.get("line")
+        message = str(
+            item.get("message")
+            or item.get("description")
+            or item.get("finding")
+            or item.get("text")
+            or item.get("suggestion")
+            or ""
+        ).strip()
+        parts: list[str] = []
+        if severity:
+            parts.append(f"[{severity}]")
+        if path:
+            loc = f"{path}:{line}" if line not in (None, "", 0, "0") else path
+            parts.append(loc)
+        if message:
+            parts.append(("- " if parts else "") + message)
+        return " ".join(parts).strip() or json.dumps(item, ensure_ascii=False)
+    return str(item).strip()
+
+
+def _normalize_string_list(items: Any) -> list[str]:
+    if items is None:
+        return []
+    if isinstance(items, str):
+        text = items.strip()
+        return [text] if text else []
+    if not isinstance(items, list):
+        text = _item_to_string(items)
+        return [text] if text else []
+    return [text for text in (_item_to_string(item) for item in items) if text]
+
+
+def _coerce_review_result(
+    review_data: dict[str, Any] | None,
+    *,
+    fallback_summary: str = "",
+) -> CodeReviewResult:
+    data = review_data if isinstance(review_data, dict) else {}
+    findings = _normalize_string_list(data.get("findings"))
+    suggestions = _normalize_string_list(data.get("suggestions"))
+    approved = data.get("approved")
+    if approved is None:
+        approved = not any(item.upper().startswith("[ERROR]") for item in findings)
+    return CodeReviewResult(
+        approved=bool(approved),
+        summary=str(data.get("summary") or fallback_summary or "").strip(),
+        findings=findings,
+        suggestions=suggestions,
+    )
 
 
 def _parse_review_json(content: str) -> CodeReviewResult:
-    json_match = re.search(r"\{{[\s\S]*\}}", content)
+    json_match = re.search(r"\{[\s\S]*\}", content)
     if json_match:
-        review_data = json.loads(json_match.group())
-    else:
-        review_data = {
-            "approved": False,
-            "summary": "Could not parse review output. Manual review required.",
-            "findings": ["Automated review parsing failed"],
-            "suggestions": ["Perform manual code review"],
+        try:
+            review_data = json.loads(json_match.group())
+            if isinstance(review_data, dict):
+                return _coerce_review_result(review_data, fallback_summary=content[:500])
+        except json.JSONDecodeError:
+            pass
+
+    findings = re.findall(r"\[(?:ERROR|WARNING)\][^\n]+", content)
+    suggestions = re.findall(r"\[SUGGESTION\][^\n]+", content)
+    return _coerce_review_result(
+        {
+            "approved": not any(line.startswith("[ERROR]") for line in findings),
+            "summary": "Parsed structured findings from review output.",
+            "findings": findings or ["Automated review parsing failed"],
+            "suggestions": suggestions or ["Perform manual code review"],
         }
-    return CodeReviewResult(
-        approved=review_data.get("approved", False),
-        summary=review_data.get("summary", ""),
-        findings=review_data.get("findings", []),
-        suggestions=review_data.get("suggestions", []),
+    )
+
+
+def _build_prompt(
+    *,
+    mr: MergeRequestInfo,
+    task_key: str,
+    development_summary: str,
+    code_context: str,
+    mr_changes: list[dict] | None,
+    knowledge_package: ReviewKnowledgePackage | None = None,
+) -> str:
+    docs = get_review_docs_service()
+    diff = docs.format_mr_diff(mr_changes)
+    if not mr_changes and code_context and code_context.strip():
+        diff = f"{diff}\n\n## Extra code context\n{code_context[:4000]}"
+
+    if knowledge_package:
+        return docs.render_review_prompt(
+            mr_title=mr.title,
+            source_branch=mr.source_branch,
+            target_branch=mr.target_branch,
+            development_summary=development_summary,
+            jira_ticket=task_key or "(no task key)",
+            prd=knowledge_package.prd,
+            diff=diff,
+            tech_stack=knowledge_package.tech_stack,
+            adrs=knowledge_package.adrs,
+            code_specs=knowledge_package.code_specs,
+            architecture_specs=knowledge_package.architecture_specs,
+            source_context=knowledge_package.source_context,
+            ubiquitous_language=knowledge_package.ubiquitous_language,
+            review_rules=knowledge_package.review_rules,
+        )
+
+    return docs.render_review_prompt(
+        mr_title=mr.title,
+        source_branch=mr.source_branch,
+        target_branch=mr.target_branch,
+        development_summary=development_summary,
+        jira_ticket=f"{task_key}: {development_summary}".strip(": "),
+        prd=development_summary,
+        diff=diff,
+        source_context=diff,
+    )
+
+
+def build_review_prompt(
+    *,
+    mr: MergeRequestInfo,
+    task_key: str,
+    development_summary: str,
+    code_context: str,
+    mr_changes: list[dict] | None,
+    knowledge_package: ReviewKnowledgePackage | None = None,
+) -> str:
+    return _build_prompt(
+        mr=mr,
+        task_key=task_key,
+        development_summary=development_summary,
+        code_context=code_context,
+        mr_changes=mr_changes,
+        knowledge_package=knowledge_package,
     )
 
 
@@ -39,6 +167,7 @@ async def execute_review(
     code_context: str,
     mr_changes: list[dict] | None,
     repo: AgentRunRepository,
+    knowledge_package: ReviewKnowledgePackage | None = None,
 ) -> dict[str, Any]:
     settings_store = get_agent_executor_settings()
     executor = settings_store.sentinel_executor
@@ -51,34 +180,21 @@ async def execute_review(
         {"executor": executor.value},
     )
 
-    prompt = f"""You are Sentinel, an expert .NET 8 code reviewer.
-
-Review this merge request for a DDD/CQRS codebase.
-
-## MR: {mr.title}
-Branch: {mr.source_branch} -> {mr.target_branch}
-
-## Development Summary:
-{development_summary}
-
-## Code Context:
-{code_context[:6000]}
-
-Provide a structured review with:
-1. approved (true/false) - approve if no critical issues
-2. summary (2-3 sentences)
-3. findings (list of issues found)
-4. suggestions (list of improvements)
-
-Return valid JSON with keys: approved, summary, findings, suggestions.
-Be strict about: SOLID principles, CQRS separation, validation, error handling.
-"""
+    prompt = _build_prompt(
+        mr=mr,
+        task_key=task_key,
+        development_summary=development_summary,
+        code_context=code_context,
+        mr_changes=mr_changes,
+        knowledge_package=knowledge_package,
+    )
 
     await repo.log_event_by_type(
         run_id,
         AgentName.SENTINEL,
         "review_started",
         f"Reviewing MR !{mr.iid} via {executor}",
+        {"prompt_chars": len(prompt)},
     )
 
     if executor == AgentExecutorType.CURSOR:
@@ -92,19 +208,20 @@ Be strict about: SOLID principles, CQRS separation, validation, error handling.
                 mr_changes=mr_changes,
             )
             review_data = result.get("review") or result
-            review = CodeReviewResult(
-                approved=review_data.get("approved", False),
-                summary=review_data.get("summary", ""),
-                findings=review_data.get("findings", []),
-                suggestions=review_data.get("suggestions", []),
-            )
+            if isinstance(review_data, str):
+                review = _parse_review_json(review_data)
+            else:
+                review = _coerce_review_result(
+                    review_data if isinstance(review_data, dict) else {},
+                    fallback_summary=str(review_data)[:500],
+                )
             await repo.log_event_by_type(
                 run_id,
                 AgentName.SENTINEL,
                 "cursor_review_completed",
                 f"Cursor review: {'approved' if review.approved else 'changes requested'}",
             )
-            return {"review": review, "executor": executor.value}
+            return {"review": review, "executor": executor.value, "prompt": prompt}
         except CursorBridgeError as exc:
             await repo.log_event_by_type(
                 run_id,
@@ -126,4 +243,4 @@ Be strict about: SOLID principles, CQRS separation, validation, error handling.
         f"[{executor}] Review completed: {'approved' if review.approved else 'changes requested'}",
         {"findings_count": len(review.findings)},
     )
-    return {"review": review, "executor": executor.value}
+    return {"review": review, "executor": executor.value, "prompt": prompt}

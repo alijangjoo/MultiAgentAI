@@ -213,6 +213,52 @@ class MergeRequestReviewResponse(BaseModel):
     status: str
     merge_request_url: str
     review: dict
+    review_prompt: str = ""
+    message: str
+    hitl_checkpoint_id: str | None = None
+    note_posted: bool | None = None
+
+
+class MergeRequestReviewContextResponse(BaseModel):
+    mr_iid: int
+    task_key: str = ""
+    merge_request_url: str = ""
+    title: str = ""
+    source_branch: str = ""
+    target_branch: str = ""
+    prompt_chars: int = 0
+    review_prompt: str
+    sections: dict[str, bool] = Field(default_factory=dict)
+
+
+class MergeRequestByEnvironmentResponse(BaseModel):
+    branches: dict[str, str]
+    dev: list[dict] = Field(default_factory=list)
+    stage: list[dict] = Field(default_factory=list)
+    production: list[dict] = Field(default_factory=list)
+    errors: list[str] | None = None
+
+
+class MergeRequestStatusResponse(BaseModel):
+    mr_iid: int
+    has_conflicts: bool = False
+    merge_status: str | None = None
+    pipeline_status: str | None = None
+    pipeline_id: int | None = None
+    pipeline_url: str | None = None
+    jira_key: str | None = None
+    pending_hitl_id: str | None = None
+
+
+class MergeRequestMergeRequest(BaseModel):
+    merged_by: str = Field(default="tech-lead@company.local")
+
+
+class MergeRequestMergeResponse(BaseModel):
+    mr_iid: int
+    state: str | None = None
+    merge_commit_sha: str | None = None
+    web_url: str | None = None
     message: str
 
 

@@ -95,11 +95,25 @@ class Settings(BaseSettings):
     knowledge_chroma_path: str = "./data/chroma"
     embedding_model: str = "text-embedding-3-small"
 
+    dizi_db_dev_host: str = ""
+    dizi_db_dev_port: int = 3306
+    dizi_db_dev_user: str = ""
+    dizi_db_dev_password: str = ""
+    dizi_db_dev_name: str = "dizi_db"
+    dizi_db_stage_host: str = ""
+    dizi_db_stage_port: int = 3306
+    dizi_db_stage_user: str = ""
+    dizi_db_stage_password: str = ""
+    dizi_db_stage_name: str = "dizi_db"
+    dizi_db_connect_timeout_seconds: int = 10
+
     dizi_repo_path: str = r"C:\Users\jangjoo.ali\source\repos\dizi_new\dizi"
     dizi_src_relative: str = "src"
     dizi_legacy_api_relative: str = "Dizi"
     dizi_spec_branch: str = "dev-oms-v2"
     dizi_specs_storage_path: str = "./data/specs"
+
+    project_dotnet_version: str = "8"
 
     database_url: str = "sqlite+aiosqlite:///./data/agent_framework.db"
     use_mock_integrations: bool = True

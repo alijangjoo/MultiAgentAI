@@ -11,6 +11,7 @@ from shared.agent_executors.review_executor import execute_review
 from shared.models.domain import AgentName, CodeReviewResult, MergeRequestInfo
 from shared.persistence.repository import AgentRunRepository
 from slices.feature_pipeline.models.state import SentinelOutput
+from slices.knowledge.review_package import ReviewKnowledgePackage
 
 
 class SentinelState(TypedDict):
@@ -22,7 +23,9 @@ class SentinelState(TypedDict):
     development_summary: str
     merge_request: MergeRequestInfo | None
     mr_changes: list[dict] | None
+    knowledge_package: ReviewKnowledgePackage | None
     review: CodeReviewResult | None
+    review_prompt: str | None
     error: str | None
 
 
@@ -101,18 +104,22 @@ async def perform_code_review(
             code_context=code_context,
             mr_changes=mr_changes,
             repo=repo,
+            knowledge_package=state.get("knowledge_package"),
         )
-        return {"review": result["review"]}
-    except Exception as exc:
         return {
-            "error": str(exc),
-            "review": CodeReviewResult(
-                approved=False,
-                summary=f"Review failed: {exc}",
-                findings=["Automated review error"],
-                suggestions=["Manual review required"],
-            ),
+            "review": result["review"],
+            "review_prompt": result.get("prompt") or "",
+            "error": None,
         }
+    except Exception as exc:
+        await repo.log_event_by_type(
+            state["run_id"],
+            AgentName.SENTINEL,
+            "review_failed",
+            str(exc),
+        )
+        # Propagate failure — do not invent a fake "Changes Requested" review.
+        raise
 
 
 def build_sentinel_graph(
@@ -172,7 +179,9 @@ async def run_sentinel(
             "development_summary": development_summary,
             "merge_request": None,
             "mr_changes": None,
+            "knowledge_package": None,
             "review": None,
+            "review_prompt": None,
             "error": None,
         }
     )
@@ -180,6 +189,7 @@ async def run_sentinel(
     return SentinelOutput(
         merge_request=result["merge_request"],
         review=result["review"],
+        review_prompt=result.get("review_prompt") or "",
     )
 
 
@@ -191,6 +201,7 @@ async def run_sentinel_review(
     development_summary: str,
     integrations: IntegrationContainer,
     repo: AgentRunRepository,
+    knowledge_package: ReviewKnowledgePackage | None = None,
 ) -> SentinelOutput:
     """Review an existing merge request without creating a new one."""
     graph = build_sentinel_review_graph(integrations, repo).compile()
@@ -204,7 +215,9 @@ async def run_sentinel_review(
             "development_summary": development_summary,
             "merge_request": merge_request,
             "mr_changes": mr_changes,
+            "knowledge_package": knowledge_package,
             "review": None,
+            "review_prompt": None,
             "error": None,
         }
     )
@@ -212,4 +225,5 @@ async def run_sentinel_review(
     return SentinelOutput(
         merge_request=merge_request,
         review=result["review"],
+        review_prompt=result.get("review_prompt") or "",
     )

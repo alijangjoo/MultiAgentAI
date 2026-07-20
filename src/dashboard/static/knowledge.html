@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sage Knowledge Agent — Monitoring</title>
+  <title>Knowledge Agent — Monitoring</title>
   <link rel="stylesheet" href="/static/dashboard.css" />
   <style>
     :root {
@@ -91,7 +91,7 @@
     .modal-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; }
     .modal-close { background: none; border: none; color: var(--muted); font-size: 1.5rem; cursor: pointer; }
     .modal-body { padding: 1.25rem; }
-    .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--border); }
     .tab {
       padding: 0.65rem 1rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);
       border-bottom: 2px solid transparent; margin-bottom: -1px;
@@ -110,7 +110,7 @@
     <div class="stats-grid">
       <div class="stat-card"><div class="label">Documents</div><div class="value" id="kpi-docs">—</div></div>
       <div class="stat-card"><div class="label">Chunks</div><div class="value" id="kpi-chunks">—</div></div>
-      <div class="stat-card blue"><div class="label">Queries</div><div class="value" id="kpi-queries">—</div><div class="sub">Sage runs</div></div>
+      <div class="stat-card blue"><div class="label">Queries</div><div class="value" id="kpi-queries">—</div><div class="sub">Knowledge Agent runs</div></div>
       <div class="stat-card blue"><div class="label">Ingests</div><div class="value" id="kpi-ingests">—</div><div class="sub">Bulk + manual</div></div>
       <div class="stat-card warn"><div class="label">Running</div><div class="value" id="kpi-running">—</div></div>
       <div class="stat-card danger"><div class="label">Failed</div><div class="value" id="kpi-failed">—</div></div>
@@ -136,7 +136,7 @@
       <!-- Runs -->
       <div class="panel">
         <div class="panel-header">
-          <span>Sage Agent Runs</span>
+          <span>Knowledge Agent Runs</span>
           <div class="toolbar">
             <select id="run-filter" onchange="filterRuns()">
               <option value="">All</option>
@@ -161,6 +161,12 @@
     <div class="panel">
       <div class="tabs">
         <div class="tab active" data-tab="query" onclick="switchTab('query')">Query (RAG)</div>
+        <div class="tab" data-tab="database" onclick="switchTab('database')">Database Schema</div>
+        <div class="tab" data-tab="review-rules" onclick="switchTab('review-rules')">Review Rules</div>
+        <div class="tab" data-tab="code-specs" onclick="switchTab('code-specs')">Code Specs</div>
+        <div class="tab" data-tab="review-prompt" onclick="switchTab('review-prompt')">Review Prompt</div>
+        <div class="tab" data-tab="agent-documents" onclick="switchTab('agent-documents')">Agent Documents</div>
+        <div class="tab" data-tab="ul" onclick="switchTab('ul')">Ubiquitous Language</div>
         <div class="tab" data-tab="ingest" onclick="switchTab('ingest')">Manual Ingest</div>
         <div class="tab" data-tab="bulk" onclick="switchTab('bulk')">Bulk Ingest</div>
         <div class="tab" data-tab="docs" onclick="switchTab('docs')">Documents</div>
@@ -174,13 +180,48 @@
               <div class="form-row"><label>Collections (optional)</label>
                 <select id="query-collections" multiple style="width:100%;min-height:70px"></select>
               </div>
-              <button onclick="runQuery()">Ask Sage (with synthesis)</button>
+              <button onclick="runQuery()">Ask Knowledge Agent</button>
             </div>
             <div>
               <label style="font-size:0.78rem;color:var(--muted)">Answer</label>
               <div class="description-box" id="query-answer" style="margin-top:0.35rem;min-height:120px">—</div>
             </div>
           </div>
+        </div>
+        <div class="tab-content" id="tab-database">
+          <div class="toolbar" style="margin-bottom:0.75rem">
+            <button class="secondary" onclick="loadDatabaseEnvironments()">Reload status</button>
+            <span class="meta">Collection: <code>database_schema</code></span>
+          </div>
+          <p class="meta" style="margin-bottom:0.9rem">
+            Only schema metadata is stored: tables/views, columns, types, keys, indexes,
+            relationships, comments, engine and estimated row counts. Application row values,
+            samples, routines and credentials are never sent to VectorDB.
+          </p>
+          <div class="panels-2" id="database-environments">
+            <div class="empty-state">Loading database environments...</div>
+          </div>
+        </div>
+        <div class="tab-content" id="tab-review-rules">
+          <div id="managed-review-rules"></div>
+        </div>
+        <div class="tab-content" id="tab-code-specs">
+          <div id="managed-code-specs"></div>
+        </div>
+        <div class="tab-content" id="tab-agent-documents">
+          <div id="managed-agent-documents"></div>
+        </div>
+        <div class="tab-content" id="tab-ul">
+          <div id="managed-ubiquitous-language"></div>
+        </div>
+        <div class="tab-content" id="tab-review-prompt">
+          <div class="toolbar" style="margin-bottom:0.75rem">
+            <button onclick="saveReviewPrompt()">Save &amp; Apply</button>
+            <button class="secondary" onclick="loadReviewPrompt()">Reload</button>
+            <span class="meta" id="review-prompt-source">—</span>
+          </div>
+          <p class="meta" style="margin-bottom:0.75rem">Stored directly in ChromaDB. Required placeholders: <code>{prd}</code>, <code>{code_specs}</code>, <code>{source_context}</code>, <code>{diff}</code>, <code>{review_rules}</code>.</p>
+          <textarea id="review-prompt-body" rows="28" oninput="markPromptDirty()" style="width:100%;font-family:monospace;font-size:0.82rem"></textarea>
         </div>
         <div class="tab-content" id="tab-ingest">
           <div class="panels-2" style="gap:1rem">
@@ -194,12 +235,12 @@
           </div>
         </div>
         <div class="tab-content" id="tab-bulk">
-          <div class="toolbar">
+          <div class="toolbar" style="flex-wrap:wrap">
+            <button onclick="ingestDiziMain()">Scan Dizi main → Knowledge</button>
             <button class="secondary" onclick="bulkGitlab()">Ingest GitLab Source</button>
             <button class="secondary" onclick="bulkConfluence()">Ingest Confluence</button>
-            <button class="secondary" onclick="bulkLocal()">Ingest Local ADR/Docs</button>
           </div>
-          <p class="meta" style="margin-top:0.75rem">Bulk ingest creates tracked Sage runs visible in the Runs panel above.</p>
+          <p class="meta" style="margin-top:0.75rem">Bulk ingest writes remote source content into ChromaDB. Sentinel runtime never reads local files.</p>
         </div>
         <div class="tab-content" id="tab-docs">
           <div class="toolbar" style="margin-bottom:0.75rem">
@@ -210,32 +251,7 @@
           <div class="scroll-box-sm" id="docs-list"><div class="empty-state">No documents</div></div>
         </div>
         <div class="tab-content" id="tab-specs">
-          <div class="toolbar" style="margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem">
-            <select id="spec-tag-filter" onchange="loadSpecs()">
-              <option value="">All specs</option>
-              <option value="new-structure">new-structure</option>
-              <option value="legacy-api">legacy-api</option>
-            </select>
-            <input type="text" id="spec-search" placeholder="Filter by title..." oninput="filterSpecList()" />
-            <button class="secondary" onclick="loadSpecs()">Reload</button>
-            <button onclick="scanSpecs()">Scan from Source</button>
-            <button class="secondary" onclick="syncSpecs()">Sync to Knowledge</button>
-            <a href="#" onclick="openSpecTemplate();return false" class="meta" style="align-self:center">View template</a>
-          </div>
-          <p class="meta" style="margin-bottom:0.75rem">Scans local Dizi repo (<code>src/</code> → new-structure, <code>Dizi/</code> → legacy-api). Edit specs here; changes sync to ChromaDB.</p>
-          <div class="panels-2" style="gap:1rem">
-            <div class="scroll-box-sm" id="specs-list"><div class="empty-state">Loading specs...</div></div>
-            <div id="spec-editor-panel" style="display:none">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;margin-bottom:0.5rem">
-                <div>
-                  <strong id="spec-editor-title"></strong>
-                  <div class="meta" id="spec-editor-meta"></div>
-                </div>
-                <button onclick="saveSpec()">Save &amp; Sync</button>
-              </div>
-              <textarea id="spec-editor-body" rows="22" style="width:100%;font-family:monospace;font-size:0.82rem"></textarea>
-            </div>
-          </div>
+          <div id="managed-architecture-specs"></div>
         </div>
       </div>
     </div>
@@ -265,13 +281,13 @@
 
   <script src="/static/dashboard.js"></script>
   <script>
-    Dashboard.mountHeader('app-header', 'Sage Knowledge', 'ChromaDB RAG · Architecture Specs · Ingest', 'knowledge');
+    Dashboard.mountHeader('app-header', 'Knowledge Agent', 'Vector DB · Database Schema · Review Context', 'knowledge');
     const API = Dashboard.API;
     let monitoring = null;
     let allRuns = [];
     let allDocs = [];
-    let allSpecs = [];
-    let currentSpecId = null;
+    const managedDocs = {};
+    const managedCurrent = {};
     let ws;
 
     function escapeHtml(t) {
@@ -282,7 +298,315 @@
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${name}`));
       if (name === 'docs') loadDocuments();
-      if (name === 'specs') loadSpecs();
+      if (name === 'specs') loadManagedDocuments('architecture-specs');
+      if (name === 'review-rules') loadReviewRules();
+      if (name === 'code-specs') loadCodeSpecs();
+      if (name === 'agent-documents') loadManagedDocuments('agent-documents');
+      if (name === 'ul') loadManagedDocuments('ubiquitous-language');
+      if (name === 'review-prompt') loadReviewPrompt();
+      if (name === 'database') loadDatabaseEnvironments();
+    }
+
+    async function loadDatabaseEnvironments() {
+      const el = document.getElementById('database-environments');
+      el.innerHTML = '<div class="empty-state">Loading database environments...</div>';
+      try {
+        const res = await fetch(`${API}/api/v1/knowledge/database/environments`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not load database status');
+        el.innerHTML = (data.environments || []).map(renderDatabaseEnvironment).join('');
+      } catch (error) {
+        el.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderDatabaseEnvironment(item) {
+      const env = escapeHtml(item.environment);
+      const configured = item.configured
+        ? '<span class="badge completed">configured</span>'
+        : '<span class="badge pending">needs .env</span>';
+      return `
+        <div class="panel" style="margin:0">
+          <div class="panel-header">
+            <span>${env.toUpperCase()} · ${escapeHtml(item.database)}</span>
+            ${configured}
+          </div>
+          <div class="panel-body padded">
+            <dl class="sys-info">
+              <dt>Host</dt><dd>${escapeHtml(item.host)}:${item.port}</dd>
+              <dt>User</dt><dd>${escapeHtml(item.user)}</dd>
+              <dt>Schema docs</dt><dd>${item.documents || 0}</dd>
+              <dt>Tables/views</dt><dd>${item.tables || 0}</dd>
+              <dt>Last sync</dt><dd>${item.last_synced_at ? new Date(item.last_synced_at).toLocaleString() : 'never'}</dd>
+            </dl>
+            <div class="toolbar" style="margin-top:0.75rem">
+              <button class="secondary" onclick="testDatabaseConnection('${env}')">Test connection</button>
+              <button onclick="syncDatabaseSchema('${env}')" ${item.configured ? '' : 'disabled'}>Sync schema → VectorDB</button>
+              <button class="secondary" onclick="openDatabaseDocuments()">View documents</button>
+              <button class="danger" onclick="purgeDatabaseSchema('${env}')" ${(item.documents || 0) ? '' : 'disabled'}>Purge</button>
+            </div>
+            <div class="meta" id="database-status-${env}">Metadata only; no table rows are read.</div>
+          </div>
+        </div>`;
+    }
+
+    function setDatabaseStatus(environment, message, isError = false) {
+      const el = document.getElementById(`database-status-${environment}`);
+      if (!el) return;
+      el.textContent = message;
+      el.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+    }
+
+    async function testDatabaseConnection(environment) {
+      setDatabaseStatus(environment, 'Testing MySQL connection...');
+      try {
+        const res = await fetch(
+          `${API}/api/v1/knowledge/database/${encodeURIComponent(environment)}/test`,
+          { method: 'POST' },
+        );
+        const data = await res.json();
+        if (!res.ok || !data.reachable) {
+          throw new Error(data.detail || data.connection_error || 'Connection failed');
+        }
+        setDatabaseStatus(environment, `Connected · ${data.server_version || 'MySQL'}`);
+      } catch (error) {
+        setDatabaseStatus(environment, error.message, true);
+      }
+    }
+
+    async function syncDatabaseSchema(environment) {
+      if (!confirm(`Synchronize ${environment.toUpperCase()} schema metadata into VectorDB?`)) return;
+      setDatabaseStatus(environment, 'Reading information_schema and updating VectorDB...');
+      try {
+        const res = await fetch(
+          `${API}/api/v1/knowledge/database/${encodeURIComponent(environment)}/sync`,
+          { method: 'POST' },
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Database sync failed');
+        setDatabaseStatus(
+          environment,
+          `Applied ${data.tables} objects, ${data.columns} columns, ${data.foreign_keys} foreign keys · run ${data.run_id}`,
+        );
+        await loadDatabaseEnvironments();
+        refreshAll();
+      } catch (error) {
+        setDatabaseStatus(environment, error.message, true);
+        refreshAll();
+      }
+    }
+
+    async function purgeDatabaseSchema(environment) {
+      if (!confirm(`Delete all ${environment.toUpperCase()} database schema documents from VectorDB?`)) return;
+      const res = await fetch(
+        `${API}/api/v1/knowledge/database/${encodeURIComponent(environment)}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setDatabaseStatus(environment, data.detail || 'Purge failed', true);
+        return;
+      }
+      await loadDatabaseEnvironments();
+      refreshAll();
+    }
+
+    function openDatabaseDocuments() {
+      switchTab('docs');
+      const filter = document.getElementById('doc-collection-filter');
+      filter.value = 'database_schema';
+      loadDocuments();
+    }
+
+    function renderDocFileList(elId, items) {
+      const el = document.getElementById(elId);
+      if (!items.length) {
+        el.innerHTML = '<div class="empty-state">No Chroma documents found</div>';
+        return;
+      }
+      el.innerHTML = items.map(item => {
+        return `
+          <div class="list-item">
+            <div style="display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start">
+              <div style="flex:1">
+                <span class="badge completed">Chroma</span> <strong>${escapeHtml(item.title)}</strong>
+                <div class="meta">${escapeHtml(item.collection || '')} · ${item.chunk_count || 0} chunks</div>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    const managedLabels = {
+      'review-rules': 'Review Rules',
+      'code-specs': 'Code Specs',
+      'agent-documents': 'Agent Documents',
+      'architecture-specs': 'Architecture Specs',
+      'ubiquitous-language': 'Ubiquitous Language',
+    };
+
+    function managedContainer(kind) {
+      return document.getElementById(`managed-${kind}`);
+    }
+
+    async function loadManagedDocuments(kind, preferredId = null) {
+      const el = managedContainer(kind);
+      if (!el) return;
+      el.innerHTML = '<div class="empty-state">Loading from ChromaDB...</div>';
+      const res = await fetch(`${API}/api/v1/knowledge/review-docs/managed/${kind}`);
+      const data = await res.json();
+      if (!res.ok) {
+        el.innerHTML = `<div class="empty-state">${escapeHtml(data.detail || 'Load failed')}</div>`;
+        return;
+      }
+      managedDocs[kind] = data.items || [];
+      const currentId = preferredId || managedCurrent[kind]?.id;
+      managedCurrent[kind] =
+        managedDocs[kind].find(item => item.id === currentId) ||
+        managedDocs[kind][0] ||
+        { id: '', title: '', content: '', source: 'chroma' };
+      renderManagedEditor(kind);
+    }
+
+    function renderManagedEditor(kind) {
+      const el = managedContainer(kind);
+      const items = managedDocs[kind] || [];
+      const current = managedCurrent[kind] || { id: '', title: '', content: '' };
+      const options = items.map(item =>
+        `<option value="${escapeHtml(item.id)}" ${item.id === current.id ? 'selected' : ''}>${escapeHtml(item.title)}</option>`
+      ).join('');
+      const allowMultiple = [
+        'review-rules',
+        'code-specs',
+        'architecture-specs',
+        'ubiquitous-language',
+      ].includes(kind);
+      el.innerHTML = `
+        <div class="toolbar" style="margin-bottom:0.75rem;flex-wrap:wrap">
+          <select id="managed-select-${kind}" onchange="selectManagedDocument('${kind}', this.value)" style="min-width:240px">
+            ${options || '<option value="">New document</option>'}
+          </select>
+          ${allowMultiple ? `<button class="secondary" onclick="newManagedDocument('${kind}')">New</button>` : ''}
+          <button onclick="saveManagedDocument('${kind}')">Save &amp; Apply</button>
+          ${allowMultiple && current.id ? `<button class="secondary" onclick="deleteManagedDocument('${kind}')">Delete</button>` : ''}
+          <button class="secondary" onclick="loadManagedDocuments('${kind}')">Reload</button>
+          <span class="meta" id="managed-status-${kind}">Applied source: ChromaDB</span>
+        </div>
+        <div class="form-row">
+          <label>Title</label>
+          <input id="managed-title-${kind}" value="${escapeHtml(current.title || '')}" oninput="markManagedDirty('${kind}')" style="width:100%" ${kind === 'agent-documents' ? 'readonly' : ''}/>
+        </div>
+        <div class="form-row">
+          <label>${managedLabels[kind]} content</label>
+          <textarea id="managed-content-${kind}" rows="25" oninput="markManagedDirty('${kind}')" style="width:100%;font-family:monospace;font-size:0.82rem">${escapeHtml(current.content || '')}</textarea>
+        </div>
+        <div class="meta">Document ID: ${escapeHtml(current.id || '(new)')} · Collection: ${escapeHtml(current.collection || kind.replace('-', '_'))}</div>`;
+    }
+
+    function selectManagedDocument(kind, id) {
+      managedCurrent[kind] =
+        (managedDocs[kind] || []).find(item => item.id === id) ||
+        { id: '', title: '', content: '' };
+      renderManagedEditor(kind);
+    }
+
+    function newManagedDocument(kind) {
+      managedCurrent[kind] = { id: '', title: '', content: '', collection: kind.replace('-', '_') };
+      renderManagedEditor(kind);
+      document.getElementById(`managed-title-${kind}`)?.focus();
+    }
+
+    function markManagedDirty(kind) {
+      const status = document.getElementById(`managed-status-${kind}`);
+      if (status) status.textContent = 'Draft has unapplied changes';
+    }
+
+    async function saveManagedDocument(kind) {
+      const current = managedCurrent[kind] || {};
+      const title = document.getElementById(`managed-title-${kind}`).value.trim();
+      const content = document.getElementById(`managed-content-${kind}`).value.trim();
+      if (title.length < 2 || content.length < 20) {
+        alert('Title or content is too short');
+        return;
+      }
+      const url = current.id
+        ? `${API}/api/v1/knowledge/review-docs/managed/${kind}/${encodeURIComponent(current.id)}`
+        : `${API}/api/v1/knowledge/review-docs/managed/${kind}`;
+      const res = await fetch(url, {
+        method: current.id ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content, doc_id: current.id || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || 'Save failed');
+        return;
+      }
+      await loadManagedDocuments(kind, data.id);
+      refreshAll();
+    }
+
+    async function deleteManagedDocument(kind) {
+      const current = managedCurrent[kind];
+      if (!current?.id || !confirm(`Delete "${current.title}" from ChromaDB?`)) return;
+      const res = await fetch(
+        `${API}/api/v1/knowledge/review-docs/managed/${kind}/${encodeURIComponent(current.id)}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || 'Delete failed');
+        return;
+      }
+      managedCurrent[kind] = null;
+      await loadManagedDocuments(kind);
+      refreshAll();
+    }
+
+    async function loadReviewRules() {
+      return loadManagedDocuments('review-rules');
+    }
+
+    async function loadCodeSpecs() {
+      return loadManagedDocuments('code-specs');
+    }
+
+    async function loadUlDocs() {
+      return loadManagedDocuments('ubiquitous-language');
+    }
+
+    async function loadReviewPrompt() {
+      const res = await fetch(`${API}/api/v1/knowledge/review-prompt`);
+      const data = await res.json();
+      document.getElementById('review-prompt-body').value = data.body || '';
+      document.getElementById('review-prompt-source').textContent =
+        `Applied source: ${data.source || '—'} · ${data.collection || 'review_prompt'}`;
+    }
+
+    function markPromptDirty() {
+      document.getElementById('review-prompt-source').textContent = 'Draft has unapplied changes';
+    }
+
+    async function saveReviewPrompt() {
+      const body = document.getElementById('review-prompt-body').value.trim();
+      if (body.length < 20) { alert('Prompt too short'); return; }
+      const res = await fetch(`${API}/api/v1/knowledge/review-prompt`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'Save failed'); return; }
+      loadReviewPrompt();
+      refreshAll();
+    }
+
+    async function ingestDiziMain() {
+      if (!confirm('Scan Dizi GitLab branch main into Knowledge? This may take a while.')) return;
+      const res = await fetch(`${API}/api/v1/knowledge/ingest/dizi-main?ref=main&limit=200`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || data.detail || JSON.stringify(data));
+      refreshAll();
     }
 
     function renderMonitoring(data) {
@@ -437,7 +761,7 @@
     async function runQuery() {
       const question = document.getElementById('query-text').value.trim();
       if (!question) return;
-      document.getElementById('query-answer').textContent = 'Sage is retrieving and synthesizing...';
+      document.getElementById('query-answer').textContent = 'Knowledge Agent is retrieving and synthesizing...';
       const cols = Array.from(document.getElementById('query-collections').selectedOptions).map(o => o.value);
       const body = { question, top_k: 5, synthesize: true };
       if (cols.length) body.collections = cols;
@@ -480,112 +804,6 @@
       const data = await res.json();
       alert(data.message || data.detail);
       refreshAll();
-    }
-
-    async function bulkLocal() {
-      const res = await fetch(`${API}/api/v1/knowledge/ingest/local`, { method: 'POST' });
-      const data = await res.json();
-      alert(data.message || data.detail);
-      refreshAll();
-    }
-
-    async function loadSpecs() {
-      const tag = document.getElementById('spec-tag-filter').value;
-      const params = tag ? `?structure_tag=${encodeURIComponent(tag)}` : '';
-      try {
-        const res = await fetch(`${API}/api/v1/knowledge/specs${params}`);
-        allSpecs = res.ok ? await res.json() : [];
-      } catch (_) { allSpecs = []; }
-      filterSpecList();
-    }
-
-    function filterSpecList() {
-      const q = (document.getElementById('spec-search').value || '').toLowerCase();
-      const filtered = allSpecs.filter(s =>
-        !q || (s.title || '').toLowerCase().includes(q) || (s.spec_id || '').toLowerCase().includes(q)
-      );
-      const el = document.getElementById('specs-list');
-      if (!filtered.length) {
-        el.innerHTML = '<div class="empty-state">No specs — click Scan from Source</div>';
-        return;
-      }
-      el.innerHTML = filtered.map(s => {
-        const tagBadge = s.structure_tag === 'new-structure'
-          ? '<span class="badge query">new-structure</span>'
-          : '<span class="badge ingest">legacy-api</span>';
-        const active = s.spec_id === currentSpecId ? ' style="border-color:var(--accent)"' : '';
-        const sid = encodeURIComponent(s.spec_id);
-        return `
-          <div class="list-item" data-spec-id="${sid}" onclick="openSpecEditor(decodeURIComponent(this.dataset.specId))"${active}>
-            ${tagBadge} <strong>${escapeHtml(s.title)}</strong>
-            <div class="meta">${escapeHtml(s.spec_id)} · ${escapeHtml(s.source_path || '')}</div>
-          </div>`;
-      }).join('');
-    }
-
-    async function openSpecEditor(specId) {
-      currentSpecId = specId;
-      filterSpecList();
-      const res = await fetch(`${API}/api/v1/knowledge/specs/${encodeURIComponent(specId)}`);
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail || 'Not found'); return; }
-      document.getElementById('spec-editor-panel').style.display = 'block';
-      document.getElementById('spec-editor-title').textContent = data.frontmatter?.title || specId;
-      const fm = data.frontmatter || {};
-      document.getElementById('spec-editor-meta').textContent =
-        `${fm.structure_tag || ''} · ${fm.source_kind || ''} · tags: ${(fm.tags || []).join(', ')}`;
-      document.getElementById('spec-editor-body').value = data.body || '';
-    }
-
-    async function saveSpec() {
-      if (!currentSpecId) return;
-      const body = document.getElementById('spec-editor-body').value.trim();
-      if (body.length < 10) { alert('Body too short'); return; }
-      const res = await fetch(`${API}/api/v1/knowledge/specs/${encodeURIComponent(currentSpecId)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, sync_knowledge: true }),
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail || 'Save failed'); return; }
-      alert('Spec saved and synced to Knowledge');
-      loadSpecs();
-      refreshAll();
-    }
-
-    async function scanSpecs() {
-      if (!confirm('Scan Dizi repo and regenerate all architecture specs?')) return;
-      const el = document.getElementById('specs-list');
-      el.innerHTML = '<div class="empty-state">Scanning repository...</div>';
-      const res = await fetch(`${API}/api/v1/knowledge/specs/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sync_knowledge: true }),
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail || 'Scan failed'); loadSpecs(); return; }
-      alert(data.message || `Generated ${data.specs_generated} specs`);
-      loadSpecs();
-      refreshAll();
-    }
-
-    async function syncSpecs() {
-      const res = await fetch(`${API}/api/v1/knowledge/specs/sync`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail); return; }
-      alert(data.message);
-      refreshAll();
-    }
-
-    async function openSpecTemplate() {
-      const res = await fetch(`${API}/api/v1/knowledge/specs/template`);
-      const text = await res.text();
-      const w = window.open('', '_blank');
-      if (w) {
-        w.document.write('<pre style="white-space:pre-wrap;font-family:monospace;padding:1rem">' +
-          escapeHtml(text) + '</pre>');
-        w.document.close();
-      }
     }
 
     async function refreshAll() {
