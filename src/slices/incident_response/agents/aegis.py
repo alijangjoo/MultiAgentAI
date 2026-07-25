@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from core.config import get_settings
+from core.tracing import trace_config
 from shared.integrations.factory import IntegrationContainer
 from shared.llm.factory import create_llm
 from shared.models.domain import AgentName
@@ -263,7 +264,12 @@ async def run_aegis(
             "knowledge_context": "",
             "report": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="aegis",
+            workflow_type="incident_analysis",
+        ),
     )
 
     if result.get("error") or not result.get("report"):

@@ -1,0 +1,4 @@
+# Runtime dependencies — synced with pyproject.toml
+# Install: py -m pip install -r requirements.txt
+
+-e .

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from core.tracing import trace_config
 from shared.llm.factory import create_llm
 from shared.utils.branch_naming import build_feature_branch_name, slugify
 
@@ -36,7 +37,10 @@ Slug:"""
 
     try:
         llm = create_llm(temperature=0)
-        response = await llm.ainvoke(prompt)
+        response = await llm.ainvoke(
+            prompt,
+            config=trace_config(agent_name="branch_slug", workflow_type="branch_naming"),
+        )
         raw = response.content if hasattr(response, "content") else str(response)
         slug = _clean_slug(raw)
         if len(slug) < 3:

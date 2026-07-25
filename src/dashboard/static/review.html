@@ -34,7 +34,31 @@
       font-weight: 600;
     }
     .review-section .meta { margin-bottom: 0.35rem; }
+    .review-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.4rem;
+    }
+    .review-section-head h4 { margin: 0; }
+    .review-section-head button {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.55rem;
+      flex-shrink: 0;
+    }
     .hitl-item { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin-bottom: 0.5rem; }
+    .hitl-error {
+      display: none;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.45);
+      color: #fca5a5;
+      padding: 0.65rem 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+      white-space: pre-wrap;
+      font-size: 0.88rem;
+    }
   </style>
 </head>
 <body>
@@ -81,12 +105,15 @@
               <button type="button" class="secondary" onclick="refreshMrStatus()">Refresh Status</button>
             </div>
             <p class="meta" style="margin-bottom:0.5rem">
-              Review builds a Knowledge Package (PRD, ADR, Specs, Rules) + GitLab diff, then sends that context via 9Router (OpenCode Free).
+              Review builds a Knowledge Package (PRD, ADR, Specs, Rules) + GitLab diff, then sends structured context to the Cursor CLI agent (default model: composer-2.5).
               Conflicts block review. Merge requires green pipeline.
             </p>
             <div id="review-panels" style="display:none">
               <div class="review-section">
-                <h4>Review Context (sent)</h4>
+                <div class="review-section-head">
+                  <h4 id="review-context-title">Review Context (sent)</h4>
+                  <button type="button" class="secondary" id="btn-copy-context" onclick="copyReviewContext()">Copy context</button>
+                </div>
                 <div class="meta" id="review-context-meta">—</div>
                 <div id="review-context" class="review-box"></div>
               </div>
@@ -103,17 +130,138 @@
 
     <div class="panel" style="margin-top:1rem">
       <div class="panel-header"><span>Pending Review Approvals (HITL)</span></div>
-      <div class="panel-body padded" id="hitl-list"><div class="empty-state">None</div></div>
+      <div class="panel-body padded">
+        <div id="hitl-error" class="hitl-error"></div>
+        <div id="hitl-list"><div class="empty-state">None</div></div>
+      </div>
     </div>
   </main>
 
   <script src="/static/dashboard.js"></script>
   <script>
-    Dashboard.mountHeader('app-header', 'Sentinel', 'Code Review · MR by environment · Cursor / 9Router', 'review');
+    Dashboard.mountHeader('app-header', 'Sentinel', 'Code Review · MR by environment · Cursor CLI', 'review');
     const API = Dashboard.API;
     let mrData = { dev: [], stage: [], production: [], branches: {} };
     let tab = 'dev';
     let selected = null;
+    let lastReviewPanelState = null;
+    let lastReviewMrIid = null;
+    let hitlResolving = false;
+    const REVIEW_STORAGE_PREFIX = 'sentinel-review-';
+
+    function reviewStorageKey(iid) {
+      return `${REVIEW_STORAGE_PREFIX}${iid}`;
+    }
+
+    function saveReviewToStorage(iid, state) {
+      if (!iid || !state) return;
+      try {
+        sessionStorage.setItem(reviewStorageKey(iid), JSON.stringify(state));
+      } catch (_) {}
+    }
+
+    function loadReviewFromStorage(iid) {
+      try {
+        const raw = sessionStorage.getItem(reviewStorageKey(iid));
+        return raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function formatApiError(detail) {
+      if (!detail) return 'Request failed';
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        return detail.map(d => (typeof d === 'object' && d.msg) ? d.msg : String(d)).join('\n');
+      }
+      return JSON.stringify(detail);
+    }
+
+    function fmtReviewItems(items, bullet) {
+      const list = Array.isArray(items) ? items : [];
+      if (!list.length) return [`${bullet} None`];
+      return list.map(item => {
+        if (typeof item === 'string') return `${bullet} ${item}`;
+        try { return `${bullet} ${JSON.stringify(item)}`; } catch (_) { return `${bullet} ${String(item)}`; }
+      });
+    }
+
+    function buildReviewResponseText(review, extras = {}) {
+      const r = review || {};
+      const lines = [];
+      if (extras.message) lines.push(extras.message, '');
+      lines.push(
+        `Approved: ${r.approved}`,
+        r.summary || '',
+        '',
+        'Findings:',
+        ...fmtReviewItems(r.findings, '•'),
+        '',
+        'Suggestions:',
+        ...fmtReviewItems(r.suggestions, '↳'),
+      );
+      return lines.join('\n');
+    }
+
+    function reviewStateFromApi(data, iid, sectionLabel = '') {
+      const review = data.review || {};
+      const prompt = data.review_prompt || '';
+      return {
+        contextText: prompt || '(prompt empty)',
+        contextTokens: data.prompt_tokens ?? null,
+        contextMeta: `MR !${iid} · ${prompt.length.toLocaleString()} chars${sectionLabel ? ` · ${sectionLabel}` : ''}${data.created_at ? ` · ${data.created_at}` : ''}`,
+        responseText: buildReviewResponseText(review, { message: data.message }),
+        responseMeta: `${data.status || 'done'}${data.note_posted ? ' · GitLab note posted' : ''}`,
+      };
+    }
+
+    async function restoreReviewPanels(iid) {
+      if (lastReviewPanelState && lastReviewMrIid === iid) {
+        showReviewPanels(lastReviewPanelState, { remember: false });
+        return true;
+      }
+      const stored = loadReviewFromStorage(iid);
+      if (stored) {
+        lastReviewPanelState = stored;
+        lastReviewMrIid = iid;
+        showReviewPanels(stored, { remember: false });
+        return true;
+      }
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${iid}/last-review`);
+        if (!res.ok) return false;
+        const data = await res.json();
+        const state = reviewStateFromApi(data, iid, 'restored');
+        lastReviewPanelState = state;
+        lastReviewMrIid = iid;
+        saveReviewToStorage(iid, state);
+        showReviewPanels(state, { remember: false });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function clearReviewPanels() {
+      document.getElementById('review-panels').style.display = 'none';
+      document.getElementById('review-context').textContent = '';
+      document.getElementById('review-result').textContent = '';
+      document.getElementById('review-context-meta').textContent = '—';
+      document.getElementById('review-response-meta').textContent = '—';
+      document.getElementById('review-context-title').textContent = 'Review Context (sent)';
+    }
+
+    function showHitlError(msg) {
+      const el = document.getElementById('hitl-error');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.display = msg ? 'block' : 'none';
+    }
+
+    function clearHitlError() {
+      showHitlError('');
+    }
 
     function showTab(name) {
       tab = name;
@@ -158,10 +306,16 @@
     }
 
     async function loadMrs() {
+      const listEl = document.getElementById('mr-list');
+      listEl.innerHTML = '<div class="empty-state">Loading merge requests from GitLab…</div>';
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
       try {
-        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/by-environment`);
+        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/by-environment`, {
+          signal: controller.signal,
+        });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
+        if (!res.ok) throw new Error(formatApiError(data.detail) || 'Failed to load merge requests');
         mrData = data;
         if (selected) {
           const all = [...(data.dev||[]), ...(data.stage||[]), ...(data.production||[])];
@@ -169,12 +323,27 @@
         }
         renderList();
         if (selected) renderDetail();
+        if (Array.isArray(data.errors) && data.errors.length) {
+          listEl.insertAdjacentHTML(
+            'afterbegin',
+            `<div class="empty-state" style="margin-bottom:0.5rem;color:#fca5a5">${Dashboard.escapeHtml(data.errors.join(' · '))}</div>`,
+          );
+        }
       } catch (err) {
-        document.getElementById('mr-list').innerHTML = `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
+        const msg = err.name === 'AbortError'
+          ? 'Loading timed out after 2 minutes. Check GitLab connectivity and click Refresh.'
+          : (err.message || 'Failed to load merge requests');
+        listEl.innerHTML = `<div class="empty-state">${Dashboard.escapeHtml(msg)}</div>`;
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
     function selectMr(iid) {
+      if (selected?.iid !== iid) {
+        lastReviewPanelState = null;
+        lastReviewMrIid = null;
+      }
       const items = mrData[tab] || [];
       selected = items.find(m => m.iid === iid) || selected;
       renderList();
@@ -213,16 +382,67 @@
 
       document.getElementById('btn-review').disabled = !!selected.has_conflicts;
       document.getElementById('btn-merge').disabled = !!selected.has_conflicts;
-      document.getElementById('review-panels').style.display = 'none';
-      document.getElementById('review-context').textContent = '';
-      document.getElementById('review-result').textContent = '';
-      document.getElementById('review-context-meta').textContent = '—';
-      document.getElementById('review-response-meta').textContent = '—';
+
+      const iid = selected.iid;
+      restoreReviewPanels(iid).then(restored => {
+        if (!restored && selected?.iid === iid) clearReviewPanels();
+      });
     }
 
-    function showReviewPanels({ contextText, contextMeta, responseText, responseMeta }) {
+    function formatContextTitle(tokens) {
+      const base = 'Review Context (sent)';
+      if (tokens == null || tokens === '') return base;
+      return `${base} · ${Number(tokens).toLocaleString()} tokens`;
+    }
+
+    async function copyReviewContext() {
+      const text = lastReviewPanelState?.contextText
+        || document.getElementById('review-context')?.textContent
+        || '';
+      if (!text || text === '(empty)' || text.startsWith('Loading ')) {
+        alert('No review context to copy yet.');
+        return;
+      }
+      const btn = document.getElementById('btn-copy-context');
+      const prev = btn ? btn.textContent : '';
+      try {
+        await navigator.clipboard.writeText(text);
+        if (btn) {
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = prev || 'Copy context'; }, 1500);
+        }
+      } catch (_) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+          if (btn) {
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = prev || 'Copy context'; }, 1500);
+          }
+        } catch (err) {
+          alert('Copy failed: ' + (err.message || 'clipboard unavailable'));
+        } finally {
+          document.body.removeChild(ta);
+        }
+      }
+    }
+
+    function showReviewPanels({ contextText, contextMeta, contextTokens, responseText, responseMeta }, opts = {}) {
+      const remember = opts.remember !== false;
+      const state = { contextText, contextMeta, contextTokens, responseText, responseMeta };
+      if (remember) {
+        lastReviewPanelState = state;
+        lastReviewMrIid = selected?.iid ?? lastReviewMrIid;
+        if (lastReviewMrIid) saveReviewToStorage(lastReviewMrIid, state);
+      }
       const panels = document.getElementById('review-panels');
       panels.style.display = 'block';
+      document.getElementById('review-context-title').textContent = formatContextTitle(contextTokens);
       document.getElementById('review-context-meta').textContent = contextMeta || '—';
       document.getElementById('review-response-meta').textContent = responseMeta || '—';
       document.getElementById('review-context').textContent = contextText || '(empty)';
@@ -246,6 +466,7 @@
       btn.textContent = 'Reviewing...';
 
       let preparedPrompt = '';
+      let preparedTokens = null;
       showReviewPanels({
         contextText: 'Loading Task PRD + Code Specs + Codebase context...',
         contextMeta: `MR !${selected.iid} · loading context`,
@@ -260,6 +481,7 @@
           throw new Error(typeof ctxData.detail === 'string' ? ctxData.detail : JSON.stringify(ctxData.detail));
         }
         preparedPrompt = ctxData.review_prompt || '';
+        preparedTokens = ctxData.prompt_tokens ?? null;
         const sectionFlags = ctxData.sections || {};
         const sectionLabel = [
           sectionFlags.task_prd ? 'Task PRD' : null,
@@ -270,8 +492,9 @@
         ].filter(Boolean).join(' / ') || 'sections unknown';
         showReviewPanels({
           contextText: preparedPrompt || '(empty context)',
+          contextTokens: ctxData.prompt_tokens,
           contextMeta: `MR !${selected.iid} · ${Number(ctxData.prompt_chars || preparedPrompt.length).toLocaleString()} chars ready · ${sectionLabel}`,
-          responseText: 'Context ready. Sending to 9Router for review...',
+          responseText: 'Context ready. Sending to Cursor CLI agent for review...',
           responseMeta: 'sending',
         });
 
@@ -281,45 +504,30 @@
           body: JSON.stringify({ reviewed_by: 'tech-lead@company.local' }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+        if (!res.ok) throw new Error(formatApiError(data.detail));
         const review = data.review || {};
         const prompt = data.review_prompt || preparedPrompt || '';
-        const fmtItems = (items, bullet) => {
-          const list = Array.isArray(items) ? items : [];
-          if (!list.length) return [`${bullet} None`];
-          return list.map(item => {
-            if (typeof item === 'string') return `${bullet} ${item}`;
-            try { return `${bullet} ${JSON.stringify(item)}`; } catch (_) { return `${bullet} ${String(item)}`; }
-          });
-        };
-        const responseText = [
-          data.message || '',
-          '',
-          `Approved: ${review.approved}`,
-          review.summary || '',
-          '',
-          'Findings:',
-          ...fmtItems(review.findings, '•'),
-          '',
-          'Suggestions:',
-          ...fmtItems(review.suggestions, '↳'),
-        ].join('\n');
         showReviewPanels({
           contextText: prompt || '(prompt empty)',
+          contextTokens: data.prompt_tokens ?? preparedTokens,
           contextMeta: `MR !${selected.iid} · ${prompt.length.toLocaleString()} chars sent · ${sectionLabel}`,
-          responseText,
+          responseText: buildReviewResponseText(review, { message: data.message }),
           responseMeta: `${data.status || 'done'}${data.note_posted ? ' · GitLab note posted' : ''}`,
         });
         await loadMrs();
         await loadHitl();
+        // Re-apply panels after loadMrs → renderDetail refresh
+        if (lastReviewPanelState && lastReviewMrIid === selected?.iid) {
+          showReviewPanels(lastReviewPanelState, { remember: false });
+        }
       } catch (err) {
         showReviewPanels({
           contextText: preparedPrompt || '(context not available)',
+          contextTokens: preparedTokens,
           contextMeta: `MR !${selected.iid} · failed`,
           responseText: `Error: ${err.message}`,
           responseMeta: 'error',
         });
-        alert(err.message);
       } finally {
         btn.disabled = !!selected?.has_conflicts;
         btn.textContent = 'Review';
@@ -336,7 +544,7 @@
           body: JSON.stringify({ merged_by: 'tech-lead@company.local' }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Merge failed');
+        if (!res.ok) throw new Error(formatApiError(data.detail));
         alert(data.message);
         selected = null;
         await loadMrs();
@@ -374,16 +582,27 @@
     }
 
     async function resolveHitl(id, action) {
-      const res = await fetch(`${API}/api/v1/hitl/${id}/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, resolved_by: 'tech-lead@company.local' }),
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail || 'HITL failed'); return; }
-      alert(data.message);
-      await loadHitl();
-      await loadMrs();
+      if (hitlResolving) return;
+      clearHitlError();
+      if (action === 'approve' && !confirm('Approve review and merge this MR? Pipeline must be successful (green).')) return;
+      hitlResolving = true;
+      try {
+        const res = await fetch(`${API}/api/v1/hitl/${id}/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, resolved_by: 'tech-lead@company.local' }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showHitlError(formatApiError(data.detail) || 'Approve & Merge failed. Check pipeline status on GitLab.');
+          return;
+        }
+        alert(data.message);
+        await loadHitl();
+        await loadMrs();
+      } finally {
+        hitlResolving = false;
+      }
     }
 
     async function loadDotnetVersion() {

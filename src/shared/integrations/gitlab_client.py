@@ -526,6 +526,22 @@ class RealGitLabClient(GitLabClientProtocol):
         self._ensure_connected()
         assert self._project is not None
         mr = self._project.mergerequests.get(mr_iid)
+        sha = getattr(mr, "sha", None)
+        head_pipeline = getattr(mr, "head_pipeline", None)
+        pipeline_status = None
+        pipeline_id = None
+        pipeline_url = None
+        if head_pipeline is not None:
+            pipeline_status = getattr(head_pipeline, "status", None)
+            pipeline_id = getattr(head_pipeline, "id", None)
+            pipeline_url = getattr(head_pipeline, "web_url", None)
+        elif sha:
+            pipelines = self._project.pipelines.list(sha=sha, per_page=5, order_by="id", sort="desc")
+            if pipelines:
+                p = pipelines[0]
+                pipeline_status = p.status
+                pipeline_id = p.id
+                pipeline_url = p.web_url
         return {
             "iid": mr.iid,
             "title": mr.title,
@@ -534,7 +550,7 @@ class RealGitLabClient(GitLabClientProtocol):
             "web_url": mr.web_url,
             "source_branch": mr.source_branch,
             "target_branch": mr.target_branch,
-            "sha": getattr(mr, "sha", None),
+            "sha": sha,
             "merge_commit_sha": getattr(mr, "merge_commit_sha", None),
             "has_conflicts": bool(getattr(mr, "has_conflicts", False)),
             "merge_status": getattr(mr, "merge_status", None),
@@ -542,6 +558,9 @@ class RealGitLabClient(GitLabClientProtocol):
             "author": getattr(getattr(mr, "author", None), "username", None),
             "created_at": getattr(mr, "created_at", None),
             "updated_at": getattr(mr, "updated_at", None),
+            "pipeline_status": pipeline_status,
+            "pipeline_id": pipeline_id,
+            "pipeline_url": pipeline_url,
         }
 
     async def get_merge_request(self, mr_iid: int) -> dict[str, Any]:
@@ -628,29 +647,13 @@ class RealGitLabClient(GitLabClientProtocol):
         return await run_sync(self._get_mr_changes_sync, mr_iid)
 
     def _get_mr_pipeline_status_sync(self, mr_iid: int) -> dict[str, Any]:
-        self._ensure_connected()
-        assert self._project is not None
-        mr = self._project.mergerequests.get(mr_iid)
-        sha = getattr(mr, "sha", None)
-        head_pipeline = getattr(mr, "head_pipeline", None)
-        if head_pipeline is not None:
-            return {
-                "status": getattr(head_pipeline, "status", None),
-                "pipeline_id": getattr(head_pipeline, "id", None),
-                "sha": sha,
-                "web_url": getattr(head_pipeline, "web_url", None),
-            }
-        if sha:
-            pipelines = self._project.pipelines.list(sha=sha, per_page=5, order_by="id", sort="desc")
-            if pipelines:
-                p = pipelines[0]
-                return {
-                    "status": p.status,
-                    "pipeline_id": p.id,
-                    "sha": sha,
-                    "web_url": p.web_url,
-                }
-        return {"status": None, "pipeline_id": None, "sha": sha, "web_url": None}
+        mr_data = self._get_mr_sync(mr_iid)
+        return {
+            "status": mr_data.get("pipeline_status"),
+            "pipeline_id": mr_data.get("pipeline_id"),
+            "sha": mr_data.get("sha"),
+            "web_url": mr_data.get("pipeline_url"),
+        }
 
     async def get_merge_request_pipeline_status(self, mr_iid: int) -> dict[str, Any]:
         return await run_sync(self._get_mr_pipeline_status_sync, mr_iid)

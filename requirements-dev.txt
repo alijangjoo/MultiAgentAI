@@ -1,0 +1,4 @@
+# Runtime + dev/test/lint (synced with pyproject.toml optional-dependencies)
+# Install: py -m pip install -r requirements-dev.txt
+
+-e .[dev]

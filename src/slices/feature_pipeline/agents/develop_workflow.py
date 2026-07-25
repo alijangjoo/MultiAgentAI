@@ -7,6 +7,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
+from core.tracing import trace_config
 from shared.deploy_settings.store import resolve_source_branch, resolve_target_branch
 from shared.integrations.factory import IntegrationContainer
 from shared.llm.factory import create_llm
@@ -221,7 +222,12 @@ async def run_forge_development(
             "development_summary": "",
             "git_pushed_by_cursor": False,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=state["run_id"],
+            agent_name="forge",
+            workflow_type="develop_workflow",
+        ),
     )
 
     if result.get("error"):
@@ -349,7 +355,12 @@ async def run_develop_workflow(
             "forge_result": {},
             "merge_request": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="develop_workflow",
+            workflow_type="develop_workflow",
+        ),
     )
 
     if result.get("error"):

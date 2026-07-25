@@ -1,7 +1,13 @@
+import asyncio
 import re
 
+from core.config import get_settings
 from shared.agent_executors.review_executor import build_review_prompt
+from shared.cursor_cli.response_parser import is_incomplete_review_response
+from shared.cursor_cli.context_builder import build_review_context
+from shared.cursor_cli.prompt_builder import build_review_prompt as build_cli_review_prompt
 from shared.integrations.registry import get_integrations
+from shared.utils.token_count import count_text_tokens
 from shared.models.domain import (
     AgentName,
     CodeReviewResult,
@@ -87,6 +93,34 @@ class GitLabMRService:
                 mrs = [m for m in mrs if m.get("target_branch") == target_branch]
             return mrs[:limit]
 
+    async def _pending_mr_hitl_map(self) -> dict[int, str]:
+        pending = await self._hitl_repo.get_pending_checkpoints()
+        result: dict[int, str] = {}
+        for cp in pending:
+            if cp.checkpoint_name != "mr_review_approval":
+                continue
+            mr_iid = cp.context.get("mr_iid")
+            if mr_iid is not None:
+                result[int(mr_iid)] = cp.id
+        return result
+
+    async def _enrich_mr_list_item(self, mr: dict, pending_by_iid: dict[int, str]) -> dict:
+        iid = mr.get("iid")
+        if not iid:
+            return mr
+        integrations = get_integrations()
+        mr_data = await integrations.gitlab.get_merge_request(int(iid))
+        return {
+            **mr,
+            "has_conflicts": _mr_has_conflicts(mr_data),
+            "merge_status": mr_data.get("merge_status"),
+            "pipeline_status": mr_data.get("pipeline_status"),
+            "pipeline_id": mr_data.get("pipeline_id"),
+            "pipeline_url": mr_data.get("pipeline_url"),
+            "jira_key": _extract_task_key(mr.get("title", ""), mr.get("source_branch", "")),
+            "pending_hitl_id": pending_by_iid.get(int(iid)),
+        }
+
     async def list_merge_requests_by_environment(self, limit: int = 40) -> dict:
         cfg = get_deploy_branch_settings()
         branches = {
@@ -94,49 +128,62 @@ class GitLabMRService:
             "stage": cfg.stage_target_branch,
             "production": cfg.production_target_branch,
         }
+        pending_by_iid = await self._pending_mr_hitl_map()
+        sem = asyncio.Semaphore(8)
+
+        async def enrich_env(target: str) -> list[dict]:
+            mrs = await self.list_merge_requests(
+                state="opened",
+                limit=limit,
+                target_branch=target,
+            )
+
+            async def enrich_one(mr: dict) -> dict:
+                async with sem:
+                    try:
+                        return await self._enrich_mr_list_item(mr, pending_by_iid)
+                    except Exception:
+                        return {
+                            **mr,
+                            "jira_key": _extract_task_key(mr.get("title", ""), mr.get("source_branch", "")),
+                            "pending_hitl_id": pending_by_iid.get(int(mr.get("iid") or 0)),
+                        }
+
+            return list(await asyncio.gather(*(enrich_one(mr) for mr in mrs)))
+
         result: dict = {"branches": branches, "dev": [], "stage": [], "production": []}
-        for env, target in branches.items():
-            try:
-                mrs = await self.list_merge_requests(
-                    state="opened",
-                    limit=limit,
-                    target_branch=target,
-                )
-                enriched = []
-                for mr in mrs:
-                    iid = mr.get("iid")
-                    detail = await self.get_mr_status(int(iid)) if iid else {}
-                    enriched.append({**mr, **detail})
-                result[env] = enriched
-            except Exception as exc:
-                result[env] = []
-                result.setdefault("errors", []).append(f"{env}: {exc}")
+        env_keys = ("dev", "stage", "production")
+        gathered = await asyncio.gather(
+            *(enrich_env(branches[key]) for key in env_keys),
+            return_exceptions=True,
+        )
+        for key, value in zip(env_keys, gathered, strict=True):
+            if isinstance(value, Exception):
+                result[key] = []
+                result.setdefault("errors", []).append(f"{key}: {value}")
+            else:
+                result[key] = value
         return result
 
     async def get_mr_status(self, mr_iid: int) -> dict:
         integrations = get_integrations()
         mr_data = await integrations.gitlab.get_merge_request(mr_iid)
-        pipeline = await integrations.gitlab.get_merge_request_pipeline_status(mr_iid)
-        pending = [
-            cp
-            for cp in await self._hitl_repo.get_pending_checkpoints()
-            if cp.context.get("mr_iid") == mr_iid and cp.checkpoint_name == "mr_review_approval"
-        ]
+        pending_by_iid = await self._pending_mr_hitl_map()
         return {
             "has_conflicts": _mr_has_conflicts(mr_data),
             "merge_status": mr_data.get("merge_status"),
-            "pipeline_status": pipeline.get("status"),
-            "pipeline_id": pipeline.get("pipeline_id"),
-            "pipeline_url": pipeline.get("web_url"),
+            "pipeline_status": mr_data.get("pipeline_status"),
+            "pipeline_id": mr_data.get("pipeline_id"),
+            "pipeline_url": mr_data.get("pipeline_url"),
             "jira_key": _extract_task_key(
                 mr_data.get("title", ""),
                 mr_data.get("source_branch", ""),
             ),
-            "pending_hitl_id": pending[0].id if pending else None,
+            "pending_hitl_id": pending_by_iid.get(mr_iid),
         }
 
     async def prepare_review_context(self, mr_iid: int) -> dict:
-        """Build the exact prompt/context that will be sent to 9Router (no LLM call)."""
+        """Build the structured review context sent to Cursor CLI (no LLM call)."""
         integrations = get_integrations()
         mr_data = await integrations.gitlab.get_merge_request(mr_iid)
         if not mr_data.get("iid"):
@@ -181,6 +228,20 @@ class GitLabMRService:
             mr_changes=mr_changes,
             knowledge_package=knowledge_package,
         )
+        settings = get_settings()
+        review_context = build_review_context(
+            mr=merge_request,
+            task_key=task_key,
+            development_summary=development_summary,
+            code_context=code_context,
+            mr_changes=mr_changes,
+            knowledge_package=knowledge_package,
+            language=settings.cursor_review_language,
+        )
+        cli_prompt = build_cli_review_prompt(
+            review_context,
+            output_format=settings.cursor_cli_output_format,
+        )
         return {
             "mr_iid": mr_iid,
             "task_key": task_key,
@@ -188,8 +249,12 @@ class GitLabMRService:
             "title": merge_request.title,
             "source_branch": merge_request.source_branch,
             "target_branch": merge_request.target_branch,
-            "prompt_chars": len(prompt),
-            "review_prompt": prompt,
+            "prompt_chars": len(cli_prompt),
+            "prompt_tokens": count_text_tokens(cli_prompt),
+            "review_prompt": cli_prompt,
+            "legacy_review_prompt": prompt,
+            "review_context": review_context.model_dump(),
+            "review_model": settings.code_review_model,
             "sections": {
                 "task_prd": bool(knowledge_package.prd and len(knowledge_package.prd) > 30),
                 "code_specs": bool(
@@ -274,8 +339,24 @@ class GitLabMRService:
 
             # Do not post GitLab notes for infrastructure/executor failures
             summary_lower = (review.summary or "").lower()
-            if "review failed" in summary_lower or "cursor bridge" in summary_lower:
-                raise RuntimeError(review.summary)
+            review_text = "\n".join(
+                [review.summary or "", *(review.findings or []), *(review.suggestions or [])]
+            )
+            if (
+                "review failed" in summary_lower
+                or "cursor bridge" in summary_lower
+                or "review did not run" in summary_lower
+                or is_incomplete_review_response(
+                    review_text,
+                    {
+                        "approved": review.approved,
+                        "summary": review.summary,
+                        "findings": review.findings,
+                        "suggestions": review.suggestions,
+                    },
+                )
+            ):
+                raise RuntimeError(review.summary or "Cursor CLI did not produce a code review")
 
             note_body = _format_review_note(review, run_id=run_id)
             try:
@@ -319,6 +400,7 @@ class GitLabMRService:
                 "merge_request_url": merge_request.url,
                 "review": review.model_dump(),
                 "review_prompt": output.review_prompt,
+                "prompt_tokens": count_text_tokens(output.review_prompt),
                 "hitl_checkpoint_id": checkpoint_id,
                 "note_posted": note_posted,
                 "message": (
@@ -335,6 +417,35 @@ class GitLabMRService:
             )
             raise
 
+    async def get_last_review_for_mr(self, mr_iid: int) -> dict | None:
+        """Return the most recent Sentinel review output for an MR, if any."""
+        runs = await self._run_repo.list_runs(
+            workflow_type=WorkflowType.MR_CODE_REVIEW.value,
+            limit=100,
+        )
+        for run in runs:
+            inp = run.get("input_payload") or {}
+            if inp.get("mr_iid") != mr_iid:
+                continue
+            out = run.get("output_payload") or {}
+            review = out.get("review")
+            if not review:
+                continue
+            prompt = out.get("review_prompt") or ""
+            return {
+                "run_id": run["id"],
+                "mr_iid": mr_iid,
+                "status": run.get("status", ""),
+                "merge_request_url": out.get("merge_request_url") or "",
+                "review": review,
+                "review_prompt": prompt,
+                "prompt_tokens": count_text_tokens(prompt) if prompt else 0,
+                "note_posted": out.get("note_posted"),
+                "created_at": run.get("created_at", ""),
+                "message": f"Last review from run {run['id'][:8]}…",
+            }
+        return None
+
     async def merge_merge_request(
         self,
         mr_iid: int,
@@ -348,8 +459,10 @@ class GitLabMRService:
         if _mr_has_conflicts(mr_data):
             raise ValueError(f"MR !{mr_iid} has merge conflicts — cannot merge")
 
-        pipeline = await integrations.gitlab.get_merge_request_pipeline_status(mr_iid)
-        pipe_status = (pipeline.get("status") or "").lower()
+        pipe_status = (mr_data.get("pipeline_status") or "").lower()
+        if not pipe_status:
+            pipeline = await integrations.gitlab.get_merge_request_pipeline_status(mr_iid)
+            pipe_status = (pipeline.get("status") or "").lower()
         if pipe_status and pipe_status not in ("success", "manual"):
             raise ValueError(
                 f"MR !{mr_iid} pipeline status is '{pipe_status}' — build must succeed before merge"

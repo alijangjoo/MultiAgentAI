@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from core.config import get_settings
+from core.tracing import trace_config
 from shared.integrations.factory import IntegrationContainer
 from shared.llm.factory import create_llm
 from shared.models.domain import AgentName, BranchInfo, SubTask
@@ -203,7 +204,12 @@ async def run_atlas(
             "subtasks": [],
             "branch": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="atlas",
+            workflow_type="feature_development",
+        ),
     )
 
     if result.get("error"):

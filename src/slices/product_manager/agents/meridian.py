@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from core.tracing import trace_config
 from shared.llm.factory import create_pm_llm
 from shared.models.domain import AgentName
 from shared.persistence.repository import AgentRunRepository
@@ -55,7 +56,14 @@ Respond as Meridian to the latest message from {role}."""
             f"Chat from {role}: {message[:80]}",
         )
 
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(
+        prompt,
+        config=trace_config(
+            run_id=session.id,
+            agent_name="meridian",
+            workflow_type="prd_chat",
+        ),
+    )
     reply = response.content if hasattr(response, "content") else str(response)
     session.messages.append(ChatMessage(role="meridian", content=reply))
     return session.id, reply, len(session.messages)
@@ -109,7 +117,14 @@ Return the complete PRD markdown document only."""
         f"Generating PRD: {resolved_title}",
     )
 
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(
+        prompt,
+        config=trace_config(
+            run_id=run_id,
+            agent_name="meridian",
+            workflow_type="prd_generation",
+        ),
+    )
     content = response.content if hasattr(response, "content") else str(response)
     prd_content = content.strip()
 

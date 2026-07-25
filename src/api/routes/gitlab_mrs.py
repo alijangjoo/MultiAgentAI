@@ -6,6 +6,7 @@ from api.schemas.requests import (
     MergeRequestListResponse,
     MergeRequestMergeRequest,
     MergeRequestMergeResponse,
+    MergeRequestLastReviewResponse,
     MergeRequestReviewContextResponse,
     MergeRequestReviewRequest,
     MergeRequestReviewResponse,
@@ -81,9 +82,21 @@ async def get_review_context(mr_iid: int):
     return MergeRequestReviewContextResponse(**result)
 
 
+@router.get(
+    "/merge-requests/{mr_iid}/last-review",
+    response_model=MergeRequestLastReviewResponse,
+)
+async def get_last_merge_request_review(mr_iid: int):
+    """Return the latest Sentinel review stored for this MR (survives page refresh)."""
+    result = await _get_service().get_last_review_for_mr(mr_iid)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No review found for MR !{mr_iid}")
+    return MergeRequestLastReviewResponse(**result)
+
+
 @router.post("/merge-requests/{mr_iid}/review", response_model=MergeRequestReviewResponse)
 async def review_merge_request(mr_iid: int, request: MergeRequestReviewRequest | None = None):
-    """Trigger Sentinel review: knowledge package → 9Router → GitLab comment → HITL."""
+    """Trigger Sentinel review: knowledge package → Cursor CLI agent → GitLab comment → HITL."""
     request = request or MergeRequestReviewRequest()
     try:
         result = await _get_service().review_merge_request(

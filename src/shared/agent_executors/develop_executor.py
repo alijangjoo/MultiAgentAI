@@ -2,6 +2,7 @@ import json
 import re
 from typing import Any
 
+from core.tracing import trace_config
 from shared.agent_executors.cursor_client import CursorBridgeError, cursor_bridge_develop
 from shared.agent_executors.models import AgentExecutorType
 from shared.agent_executors.settings_store import get_agent_executor_settings
@@ -108,7 +109,14 @@ Example: {{"src/AppCore/Shared/Vendors/Commands/CreateVendorCommand.cs": "// cod
         f"Developing subtask via {executor}: {subtask_title}",
     )
 
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(
+        prompt,
+        config=trace_config(
+            run_id=run_id,
+            agent_name="forge",
+            workflow_type="feature_development",
+        ),
+    )
     content = response.content if hasattr(response, "content") else str(response)
     files = _parse_files_json(
         content,

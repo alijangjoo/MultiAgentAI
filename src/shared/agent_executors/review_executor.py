@@ -2,7 +2,10 @@ import json
 import re
 from typing import Any
 
+from core.config import get_settings
+from core.tracing import trace_config
 from shared.agent_executors.cursor_client import CursorBridgeError, cursor_bridge_review
+from shared.cursor_cli.context_builder import build_review_context
 from shared.agent_executors.models import AgentExecutorType
 from shared.agent_executors.settings_store import get_agent_executor_settings
 from shared.llm.factory import create_code_review_llm_for_provider
@@ -198,14 +201,22 @@ async def execute_review(
     )
 
     if executor == AgentExecutorType.CURSOR:
+        settings = get_settings()
+        review_context = build_review_context(
+            mr=mr,
+            task_key=task_key,
+            development_summary=development_summary,
+            code_context=code_context,
+            mr_changes=mr_changes,
+            knowledge_package=knowledge_package,
+            language=settings.cursor_review_language,
+        )
         try:
             result = await cursor_bridge_review(
                 run_id=run_id,
                 task_key=task_key,
                 branch_name=branch_name,
-                mr_title=mr.title,
-                prompt=prompt,
-                mr_changes=mr_changes,
+                context=review_context.model_dump(),
             )
             review_data = result.get("review") or result
             if isinstance(review_data, str):
@@ -232,7 +243,14 @@ async def execute_review(
             raise
 
     llm = create_code_review_llm_for_provider(executor.value)
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(
+        prompt,
+        config=trace_config(
+            run_id=run_id,
+            agent_name="sentinel",
+            workflow_type="code_review",
+        ),
+    )
     content = response.content if hasattr(response, "content") else str(response)
     review = _parse_review_json(content)
 

@@ -1,11 +1,15 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -22,7 +26,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
     coding_model: str = "gpt-4o-mini"
-    code_review_model: str = "gpt-4o"
+    code_review_model: str = "composer-2.5"
     pm_model: str = "gpt-4o"
     prd_template_path: str = "docs/templates/PRD_TEMPLATE.md"
 
@@ -32,6 +36,19 @@ class Settings(BaseSettings):
     cursor_repo_path: str = ""
     cursor_bridge_url: str = "http://127.0.0.1:9090"
     cursor_model: str = "composer-2.5"
+    cursor_cli_bin: str = "agent"
+    cursor_cli_timeout_seconds: int = 300
+    cursor_cli_output_format: str = "text"
+    cursor_cli_mode: str = "ask"
+    # Review uses agent mode by default — ask mode often returns placeholder text instead of reviewing the diff.
+    cursor_cli_review_mode: str = "agent"
+    cursor_review_language: str = "en"
+    cursor_review_include_specs: bool = False
+    cursor_cli_review_use_workspace: bool = False
+    cursor_review_fallback_9router: bool = True
+    http_proxy: str = ""
+    https_proxy: str = ""
+    no_proxy: str = ""
 
     jira_url: str = ""
     jira_username: str = ""
@@ -117,6 +134,11 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/agent_framework.db"
     use_mock_integrations: bool = True
+
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
 
     def should_mock_jira(self) -> bool:
         if self.use_mock_jira is not None:

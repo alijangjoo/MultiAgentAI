@@ -214,6 +214,7 @@ class MergeRequestReviewResponse(BaseModel):
     merge_request_url: str
     review: dict
     review_prompt: str = ""
+    prompt_tokens: int = 0
     message: str
     hitl_checkpoint_id: str | None = None
     note_posted: bool | None = None
@@ -227,8 +228,22 @@ class MergeRequestReviewContextResponse(BaseModel):
     source_branch: str = ""
     target_branch: str = ""
     prompt_chars: int = 0
+    prompt_tokens: int = 0
     review_prompt: str
     sections: dict[str, bool] = Field(default_factory=dict)
+
+
+class MergeRequestLastReviewResponse(BaseModel):
+    run_id: str
+    mr_iid: int
+    status: str
+    merge_request_url: str = ""
+    review: dict
+    review_prompt: str = ""
+    prompt_tokens: int = 0
+    note_posted: bool | None = None
+    created_at: str = ""
+    message: str = ""
 
 
 class MergeRequestByEnvironmentResponse(BaseModel):

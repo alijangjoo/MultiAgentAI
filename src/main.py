@@ -20,6 +20,7 @@ from api.routes.knowledge import router as knowledge_router
 from api.routes.product_manager import router as product_manager_router
 from core.config import get_settings
 from core.logging import configure_logging
+from core.tracing import flush_tracing, init_tracing, tracing_status
 from shared.persistence.database import init_db
 from slices.deploy_request.poller import start_deploy_poller, stop_deploy_poller
 
@@ -29,11 +30,13 @@ DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard" / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(get_settings().debug)
+    init_tracing()
     await init_db()
     start_deploy_poller()
     try:
         yield
     finally:
+        flush_tracing()
         await stop_deploy_poller()
 
 
@@ -150,6 +153,7 @@ def create_app() -> FastAPI:
             "dashboard": str(DASHBOARD_DIR),
             "dashboard_exists": DASHBOARD_DIR.exists(),
             "project_dotnet_version": settings.project_dotnet_version,
+            "tracing": tracing_status(),
         }
 
     return app

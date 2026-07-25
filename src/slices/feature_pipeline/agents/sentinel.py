@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from core.config import get_settings
+from core.tracing import trace_config
 from shared.integrations.factory import IntegrationContainer
 from shared.agent_executors.review_executor import execute_review
 from shared.models.domain import AgentName, CodeReviewResult, MergeRequestInfo
@@ -183,7 +184,12 @@ async def run_sentinel(
             "review": None,
             "review_prompt": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="sentinel",
+            workflow_type="feature_development",
+        ),
     )
 
     return SentinelOutput(
@@ -219,7 +225,12 @@ async def run_sentinel_review(
             "review": None,
             "review_prompt": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="sentinel",
+            workflow_type="code_review",
+        ),
     )
 
     return SentinelOutput(

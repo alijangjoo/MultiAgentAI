@@ -5,6 +5,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
+from core.tracing import trace_config
 from shared.llm.factory import create_llm
 from shared.models.domain import AgentName
 from shared.persistence.repository import AgentRunRepository
@@ -130,5 +131,10 @@ async def run_sage(
             "results": [],
             "answer": None,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="sage",
+            workflow_type="knowledge_query",
+        ),
     )

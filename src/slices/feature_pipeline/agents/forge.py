@@ -5,6 +5,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
+from core.tracing import trace_config
 from shared.integrations.factory import IntegrationContainer
 from shared.agent_executors.develop_executor import execute_develop
 from shared.models.domain import AgentName, SubTask
@@ -151,7 +152,12 @@ async def run_forge(
             "development_summary": "",
             "git_pushed_by_cursor": False,
             "error": None,
-        }
+        },
+        config=trace_config(
+            run_id=run_id,
+            agent_name="forge",
+            workflow_type="feature_development",
+        ),
     )
 
     if result.get("error"):

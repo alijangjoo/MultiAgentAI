@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.tracing import trace_config
 from shared.deploy_settings.store import get_deploy_branch_settings, is_automatic_send_enabled
 from shared.integrations.factory import IntegrationContainer
 from shared.integrations.registry import get_integrations
@@ -272,7 +273,12 @@ class DeployRequestOrchestrator:
                 "pipeline_url": req.pipeline_url,
                 "jira_key": jira_key,
                 "version": resolved_version,
-            }
+            },
+            config=trace_config(
+                run_id=req.run_id,
+                agent_name="deploy_request",
+                workflow_type="deploy_request",
+            ),
         )
 
         updated = await self._deploy_repo.get(req.id)
