@@ -59,6 +59,31 @@
       white-space: pre-wrap;
       font-size: 0.88rem;
     }
+    .review-steps-log {
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 0.65rem;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .review-step {
+      padding: 0.2rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      line-height: 1.35;
+    }
+    .review-step:last-child { border-bottom: none; }
+    .review-step.error { color: #fca5a5; }
+    .review-step.info { color: var(--text-muted, #94a3b8); }
+    .review-step strong { color: var(--accent, #10b981); font-weight: 600; }
+    .cli-output-log .cli-stream-label {
+      color: var(--warning, #f59e0b);
+      font-weight: 600;
+      margin-top: 0.45rem;
+    }
+    .cli-output-log .cli-stream-label.stderr { color: #fca5a5; }
   </style>
 </head>
 <body>
@@ -105,10 +130,17 @@
               <button type="button" class="secondary" onclick="refreshMrStatus()">Refresh Status</button>
             </div>
             <p class="meta" style="margin-bottom:0.5rem">
-              Review builds a Knowledge Package (PRD, ADR, Specs, Rules) + GitLab diff, then sends structured context to the Cursor CLI agent (default model: composer-2.5).
-              Conflicts block review. Merge requires green pipeline.
+              Review creates a git worktree at the MR branch, materializes the <strong>sentinel-review</strong> skill from Knowledge Agent
+              (<code>.cursor/skills/sentinel-review/SKILL.md</code>), then runs Cursor CLI with the MR diff.
+              Requires <code>CURSOR_REPO_PATH</code> and Cursor Bridge. Conflicts block review.
             </p>
             <div id="review-panels" style="display:none">
+              <div class="review-section">
+                <h4>Review Steps <span class="meta">(live — not saved)</span></h4>
+                <div id="review-steps-log" class="review-steps-log">
+                  <div class="review-step info">Click Review to start…</div>
+                </div>
+              </div>
               <div class="review-section">
                 <div class="review-section-head">
                   <h4 id="review-context-title">Review Context (sent)</h4>
@@ -116,6 +148,14 @@
                 </div>
                 <div class="meta" id="review-context-meta">—</div>
                 <div id="review-context" class="review-box"></div>
+              </div>
+              <div class="review-section">
+                <div class="review-section-head">
+                  <h4>Cursor CLI Output <span class="meta">(stdout / stderr · live via SSE)</span></h4>
+                  <button type="button" class="secondary" id="btn-copy-cli-output" onclick="copyCliOutput()">Copy CLI output</button>
+                </div>
+                <div class="meta" id="review-cli-meta">—</div>
+                <div id="review-cli-output" class="review-box cli-output-log">Waiting for Cursor CLI subprocess…</div>
               </div>
               <div class="review-section">
                 <h4>Review Response</h4>
@@ -171,11 +211,50 @@
 
     function formatApiError(detail) {
       if (!detail) return 'Request failed';
-      if (typeof detail === 'string') return detail;
+      if (typeof detail === 'string') {
+        const trimmed = detail.trim();
+        if (trimmed.startsWith('Cursor Bridge review failed: ')) {
+          return formatApiError(trimmed.slice('Cursor Bridge review failed: '.length));
+        }
+        if (trimmed.startsWith('{') && trimmed.includes('"detail"')) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.detail) return formatApiError(parsed.detail);
+          } catch (_) {}
+        }
+        return trimmed;
+      }
       if (Array.isArray(detail)) {
         return detail.map(d => (typeof d === 'object' && d.msg) ? d.msg : String(d)).join('\n');
       }
+      if (typeof detail === 'object' && detail.message) return String(detail.message);
       return JSON.stringify(detail);
+    }
+
+    async function checkCursorBridgeReady() {
+      try {
+        const res = await fetch(`${API}/api/v1/gitlab/cursor-bridge/health`);
+        const data = await res.json();
+        if (!res.ok) {
+          return formatApiError(data.detail) || `Bridge health HTTP ${res.status}`;
+        }
+        if (!data.has_cursor_api_key) {
+          return (
+            'CURSOR_API_KEY is not set on Cursor Bridge (has_cursor_api_key=false).\n\n' +
+            '1. Open AgentFramework/.env and set:\n' +
+            '   CURSOR_API_KEY=key_xxxx   (from Cursor → Settings → Cursor API Keys)\n' +
+            '2. Stop Cursor Bridge (Ctrl+C) and restart:\n' +
+            '   python run_cursor_bridge.py\n' +
+            '3. Verify: GET /api/v1/gitlab/cursor-bridge/health → has_cursor_api_key: true'
+          );
+        }
+        if (data.cursor_cli_error) {
+          return `Cursor CLI not ready: ${data.cursor_cli_error}`;
+        }
+        return null;
+      } catch (err) {
+        return `Could not check Cursor Bridge: ${err.message}`;
+      }
     }
 
     function fmtReviewItems(items, bullet) {
@@ -204,6 +283,27 @@
       return lines.join('\n');
     }
 
+    function buildCliOutputText(state) {
+      const parts = [];
+      if (state.cliStdout) {
+        parts.push('=== stdout ===', state.cliStdout.trim());
+      }
+      if (state.cliStderr) {
+        parts.push('', '=== stderr ===', state.cliStderr.trim());
+      }
+      return parts.join('\n').trim() || '(empty)';
+    }
+
+    function formatCliMeta(meta) {
+      if (!meta) return '—';
+      const bits = [];
+      if (meta.backend) bits.push(`backend: ${meta.backend}`);
+      if (meta.returncode != null) bits.push(`exit: ${meta.returncode}`);
+      if (meta.timed_out) bits.push('timed out');
+      if (meta.command && meta.command.length) bits.push(`cmd: ${meta.command.join(' ')}`);
+      return bits.join(' · ') || '—';
+    }
+
     function reviewStateFromApi(data, iid, sectionLabel = '') {
       const review = data.review || {};
       const prompt = data.review_prompt || '';
@@ -211,6 +311,13 @@
         contextText: prompt || '(prompt empty)',
         contextTokens: data.prompt_tokens ?? null,
         contextMeta: `MR !${iid} · ${prompt.length.toLocaleString()} chars${sectionLabel ? ` · ${sectionLabel}` : ''}${data.created_at ? ` · ${data.created_at}` : ''}`,
+        cliStdout: data.cli_stdout || '',
+        cliStderr: data.cli_stderr || '',
+        cliMeta: {
+          backend: data.cli_backend,
+          returncode: data.cli_returncode,
+          command: data.cli_command || [],
+        },
         responseText: buildReviewResponseText(review, { message: data.message }),
         responseMeta: `${data.status || 'done'}${data.note_posted ? ' · GitLab note posted' : ''}`,
       };
@@ -250,6 +357,7 @@
       document.getElementById('review-context-meta').textContent = '—';
       document.getElementById('review-response-meta').textContent = '—';
       document.getElementById('review-context-title').textContent = 'Review Context (sent)';
+      clearCliOutput();
     }
 
     function showHitlError(msg) {
@@ -432,9 +540,67 @@
       }
     }
 
-    function showReviewPanels({ contextText, contextMeta, contextTokens, responseText, responseMeta }, opts = {}) {
+    function clearCliOutput() {
+      const el = document.getElementById('review-cli-output');
+      const meta = document.getElementById('review-cli-meta');
+      if (el) el.textContent = 'Waiting for Cursor CLI subprocess…';
+      if (meta) meta.textContent = '—';
+    }
+
+    function renderCliOutputPanel(state) {
+      const el = document.getElementById('review-cli-output');
+      const meta = document.getElementById('review-cli-meta');
+      if (!el) return;
+      const chunks = [];
+      if (state.cliStdout) {
+        chunks.push('=== stdout ===', state.cliStdout.trim());
+      }
+      if (state.cliStderr) {
+        chunks.push('', '=== stderr ===', state.cliStderr.trim());
+      }
+      el.textContent = chunks.join('\n').trim() || '(empty)';
+      if (meta) meta.textContent = formatCliMeta(state.cliMeta);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function appendCliOutputEvent(entry) {
+      const el = document.getElementById('review-cli-output');
+      const meta = document.getElementById('review-cli-meta');
+      if (!el) return;
+      const stream = (entry.stream || 'stdout').toLowerCase();
+      const label = stream === 'stderr' ? '=== stderr ===' : '=== stdout ===';
+      const prefix = el.textContent.includes('Waiting for Cursor CLI') ? '' : el.textContent + '\n\n';
+      if (!el.textContent.includes(label)) {
+        el.textContent = `${prefix}${label}\n${entry.text || ''}`.trim();
+      } else if (entry.final) {
+        el.textContent = `${prefix.replace(/\n\n$/, '')}\n${label}\n${entry.text || ''}`.trim();
+      } else {
+        el.textContent += entry.text || '';
+      }
+      if (meta && entry.detail) {
+        meta.textContent = formatCliMeta({
+          backend: entry.detail.backend,
+          returncode: entry.detail.returncode,
+          timed_out: entry.detail.timed_out,
+          command: entry.detail.command,
+        });
+      }
+      el.scrollTop = el.scrollHeight;
+      if (lastReviewPanelState) {
+        if (stream === 'stderr') lastReviewPanelState.cliStderr = entry.text || '';
+        else lastReviewPanelState.cliStdout = entry.text || '';
+        lastReviewPanelState.cliMeta = entry.detail || lastReviewPanelState.cliMeta;
+      }
+    }
+
+    async function copyCliOutput() {
+      const text = buildCliOutputText(lastReviewPanelState || {});
+      copyTextToClipboard(text, document.getElementById('btn-copy-cli-output'));
+    }
+
+    function showReviewPanels({ contextText, contextMeta, contextTokens, cliStdout, cliStderr, cliMeta, responseText, responseMeta }, opts = {}) {
       const remember = opts.remember !== false;
-      const state = { contextText, contextMeta, contextTokens, responseText, responseMeta };
+      const state = { contextText, contextMeta, contextTokens, cliStdout, cliStderr, cliMeta, responseText, responseMeta };
       if (remember) {
         lastReviewPanelState = state;
         lastReviewMrIid = selected?.iid ?? lastReviewMrIid;
@@ -447,6 +613,7 @@
       document.getElementById('review-response-meta').textContent = responseMeta || '—';
       document.getElementById('review-context').textContent = contextText || '(empty)';
       document.getElementById('review-result').textContent = responseText || '(empty)';
+      renderCliOutputPanel(state);
     }
 
     async function refreshMrStatus() {
@@ -457,6 +624,80 @@
       await loadMrs();
     }
 
+    function clearReviewSteps() {
+      const el = document.getElementById('review-steps-log');
+      if (el) el.innerHTML = '';
+    }
+
+    function appendReviewStep(entry) {
+      const el = document.getElementById('review-steps-log');
+      if (!el) return;
+      const line = document.createElement('div');
+      const level = entry.level || 'info';
+      line.className = `review-step ${level}`;
+      const time = entry.at
+        ? new Date(entry.at).toLocaleTimeString()
+        : new Date().toLocaleTimeString();
+      line.innerHTML = `<strong>[${time}] ${Dashboard.escapeHtml(entry.step || 'step')}</strong> — ${Dashboard.escapeHtml(entry.message || '')}`;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function parseSseChunk(buffer) {
+      const events = [];
+      const parts = buffer.split('\n\n');
+      const rest = parts.pop() || '';
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let event = 'message';
+        let data = '';
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (data) {
+          try {
+            events.push({ event, data: JSON.parse(data) });
+          } catch (_) {}
+        }
+      }
+      return { events, rest };
+    }
+
+    async function consumeReviewStream(mrIid, body) {
+      const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${mrIid}/review/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(formatApiError(err.detail) || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseChunk(buffer);
+        buffer = parsed.rest;
+        for (const { event, data } of parsed.events) {
+          if (event === 'step') appendReviewStep(data);
+          if (event === 'cli_output') appendCliOutputEvent(data);
+          if (event === 'result') result = data;
+          if (event === 'error') throw new Error(data.message || 'Review failed');
+        }
+      }
+      if (!result) throw new Error('Review stream ended without result');
+      return result;
+    }
+
     async function reviewMr() {
       if (!selected) return;
       if (selected.has_conflicts) { alert('Cannot review: MR has conflicts'); return; }
@@ -465,69 +706,79 @@
       btn.disabled = true;
       btn.textContent = 'Reviewing...';
 
-      let preparedPrompt = '';
-      let preparedTokens = null;
+      clearReviewSteps();
+      clearCliOutput();
+      document.getElementById('review-panels').style.display = 'block';
+
+      const bridgeIssue = await checkCursorBridgeReady();
+      if (bridgeIssue) {
+        clearReviewSteps();
+        appendReviewStep({ step: 'preflight', message: bridgeIssue, level: 'error' });
+        showReviewPanels({
+          contextText: '(blocked — fix Cursor Bridge configuration first)',
+          contextMeta: `MR !${selected.iid} · preflight failed`,
+          responseText: bridgeIssue,
+          responseMeta: 'error',
+        }, { remember: false });
+        btn.disabled = !!selected?.has_conflicts;
+        btn.textContent = 'Review';
+        return;
+      }
+
       showReviewPanels({
-        contextText: 'Loading Task PRD + Code Specs + Codebase context...',
-        contextMeta: `MR !${selected.iid} · loading context`,
-        responseText: 'Waiting until context is ready...',
-        responseMeta: 'preparing',
-      });
+        contextText: 'Building context…',
+        contextMeta: `MR !${selected.iid} · streaming`,
+        cliStdout: '',
+        cliStderr: '',
+        cliMeta: null,
+        responseText: 'Waiting for review steps…',
+        responseMeta: 'running',
+      }, { remember: false });
 
       try {
-        const ctxRes = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/review-context`);
-        const ctxData = await ctxRes.json();
-        if (!ctxRes.ok) {
-          throw new Error(typeof ctxData.detail === 'string' ? ctxData.detail : JSON.stringify(ctxData.detail));
-        }
-        preparedPrompt = ctxData.review_prompt || '';
-        preparedTokens = ctxData.prompt_tokens ?? null;
-        const sectionFlags = ctxData.sections || {};
-        const sectionLabel = [
-          sectionFlags.task_prd ? 'Task PRD' : null,
-          sectionFlags.code_specs ? 'Code Specs' : null,
-          sectionFlags.architecture_specs ? 'Architecture Specs' : null,
-          sectionFlags.codebase ? 'Codebase' : null,
-          sectionFlags.review_rules ? 'Review Rules' : null,
-        ].filter(Boolean).join(' / ') || 'sections unknown';
-        showReviewPanels({
-          contextText: preparedPrompt || '(empty context)',
-          contextTokens: ctxData.prompt_tokens,
-          contextMeta: `MR !${selected.iid} · ${Number(ctxData.prompt_chars || preparedPrompt.length).toLocaleString()} chars ready · ${sectionLabel}`,
-          responseText: 'Context ready. Sending to Cursor CLI agent for review...',
-          responseMeta: 'sending',
+        const data = await consumeReviewStream(selected.iid, {
+          reviewed_by: 'tech-lead@company.local',
         });
-
-        const res = await fetch(`${API}/api/v1/gitlab/merge-requests/${selected.iid}/review`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reviewed_by: 'tech-lead@company.local' }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(formatApiError(data.detail));
         const review = data.review || {};
-        const prompt = data.review_prompt || preparedPrompt || '';
+        const prompt = data.review_prompt || '';
         showReviewPanels({
           contextText: prompt || '(prompt empty)',
-          contextTokens: data.prompt_tokens ?? preparedTokens,
-          contextMeta: `MR !${selected.iid} · ${prompt.length.toLocaleString()} chars sent · ${sectionLabel}`,
+          contextTokens: data.prompt_tokens,
+          contextMeta: `MR !${selected.iid} · ${prompt.length.toLocaleString()} chars · skill-worktree`,
+          cliStdout: data.cli_stdout || '',
+          cliStderr: data.cli_stderr || '',
+          cliMeta: {
+            backend: data.cli_backend,
+            returncode: data.cli_returncode,
+            command: data.cli_command || [],
+          },
           responseText: buildReviewResponseText(review, { message: data.message }),
           responseMeta: `${data.status || 'done'}${data.note_posted ? ' · GitLab note posted' : ''}`,
         });
+        saveReviewToStorage(selected.iid, {
+          contextText: prompt,
+          contextTokens: data.prompt_tokens,
+          contextMeta: `MR !${selected.iid}`,
+          cliStdout: data.cli_stdout || '',
+          cliStderr: data.cli_stderr || '',
+          cliMeta: {
+            backend: data.cli_backend,
+            returncode: data.cli_returncode,
+            command: data.cli_command || [],
+          },
+          responseText: buildReviewResponseText(review, { message: data.message }),
+          responseMeta: data.status || 'done',
+        });
         await loadMrs();
         await loadHitl();
-        // Re-apply panels after loadMrs → renderDetail refresh
-        if (lastReviewPanelState && lastReviewMrIid === selected?.iid) {
-          showReviewPanels(lastReviewPanelState, { remember: false });
-        }
       } catch (err) {
+        appendReviewStep({ step: 'failed', message: err.message, level: 'error' });
         showReviewPanels({
-          contextText: preparedPrompt || '(context not available)',
-          contextTokens: preparedTokens,
+          contextText: '(context not available)',
           contextMeta: `MR !${selected.iid} · failed`,
           responseText: `Error: ${err.message}`,
           responseMeta: 'error',
-        });
+        }, { remember: false });
       } finally {
         btn.disabled = !!selected?.has_conflicts;
         btn.textContent = 'Review';

@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field
 
 from core.config import get_settings
 from core.tracing import GenerationTimer, flush_tracing, init_tracing, record_generation, tracing_status
-from shared.cursor_cli.fallback import should_fallback_from_cursor_cli
+from shared.cursor_cli.fallback import (
+    should_fallback_from_cursor_cli,
+    summarize_cursor_cli_failure,
+)
 from shared.cursor_cli.models import ReviewContext
 from shared.cursor_cli.models import ReviewRequest as CursorCliReviewRequest
 from shared.cursor_cli.response_parser import parse_review_response
@@ -400,7 +403,7 @@ def _run_cursor_cli_review(
 
     settings = get_settings()
     workspace = (request.workspace or "").strip() or None
-    if settings.cursor_cli_review_use_workspace and not workspace:
+    if not workspace and settings.cursor_cli_review_use_workspace:
         workspace = (settings.cursor_repo_path or "").strip() or None
     cli_request = CursorCliReviewRequest(
         context=request.context,
@@ -448,11 +451,11 @@ def _run_cursor_cli_review(
             detail=f"Cursor CLI review timed out after {cli_request.timeout_seconds}s",
         )
     if result.returncode != 0:
+        hint = summarize_cursor_cli_failure(result.stderr, result.stdout)
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Cursor CLI exited with code {result.returncode}: "
-                f"{failure_text[:800]}"
+            detail=hint if hint != failure_text[:500] else (
+                f"Cursor CLI exited with code {result.returncode}: {failure_text[:800]}"
             ),
         )
     if not result.stdout.strip():
@@ -514,18 +517,19 @@ async def health():
         cli_error = str(exc)
 
     settings = get_settings()
+    api_key = (os.environ.get("CURSOR_API_KEY") or settings.cursor_api_key or "").strip()
     return {
         "status": "ok",
         "mode": "cursor-cli",
         "review_fallback_9router": settings.cursor_review_fallback_9router,
-        "develop_mode": "9router" if _uses_9router() or not os.environ.get("CURSOR_API_KEY") else "cursor-sdk",
+        "develop_mode": "9router" if _uses_9router() or not api_key else "cursor-sdk",
         "review_model": _review_model(),
         "cursor_cli_bin": cli_path,
         "cursor_cli_error": cli_error,
         "llm_base_url": os.environ.get("LLM_BASE_URL", ""),
         "cursor_sdk": has_sdk,
         "repo_path": repo,
-        "has_cursor_api_key": bool(os.environ.get("CURSOR_API_KEY")),
+        "has_cursor_api_key": bool(api_key),
         "tracing": tracing_status(),
     }
 
@@ -624,6 +628,11 @@ async def review(request: ReviewRequest):
         "run_id": request.run_id,
         "model": review_model,
         "backend": backend,
-        "raw_content": content[:4000],
+        "raw_content": content[:16000],
+        "cli_stdout": (cli_result.stdout or "")[:16000],
+        "cli_stderr": (cli_result.stderr or "")[:8000],
+        "cli_command": cli_result.command,
+        "cli_returncode": cli_result.returncode,
+        "cli_timed_out": cli_result.timed_out,
         "prompt_chars": cli_result.prompt_chars,
     }

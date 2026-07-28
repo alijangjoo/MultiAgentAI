@@ -164,6 +164,7 @@
         <div class="tab" data-tab="database" onclick="switchTab('database')">Database Schema</div>
         <div class="tab" data-tab="review-rules" onclick="switchTab('review-rules')">Review Rules</div>
         <div class="tab" data-tab="code-specs" onclick="switchTab('code-specs')">Code Specs</div>
+        <div class="tab" data-tab="review-skill" onclick="switchTab('review-skill')">Review Skill</div>
         <div class="tab" data-tab="review-prompt" onclick="switchTab('review-prompt')">Review Prompt</div>
         <div class="tab" data-tab="agent-documents" onclick="switchTab('agent-documents')">Agent Documents</div>
         <div class="tab" data-tab="ul" onclick="switchTab('ul')">Ubiquitous Language</div>
@@ -207,6 +208,14 @@
         </div>
         <div class="tab-content" id="tab-code-specs">
           <div id="managed-code-specs"></div>
+        </div>
+        <div class="tab-content" id="tab-review-skill">
+          <p class="meta" style="margin:0 0 0.75rem">
+            Cursor SKILL.md for Sentinel MR review. Materialized to
+            <code>.cursor/skills/sentinel-review/SKILL.md</code> when a review workspace is created.
+            Frontmatter must include <code>name: sentinel-review</code>.
+          </p>
+          <div id="managed-review-skill"></div>
         </div>
         <div class="tab-content" id="tab-agent-documents">
           <div id="managed-agent-documents"></div>
@@ -301,6 +310,7 @@
       if (name === 'specs') loadManagedDocuments('architecture-specs');
       if (name === 'review-rules') loadReviewRules();
       if (name === 'code-specs') loadCodeSpecs();
+      if (name === 'review-skill') loadReviewSkill();
       if (name === 'agent-documents') loadManagedDocuments('agent-documents');
       if (name === 'ul') loadManagedDocuments('ubiquitous-language');
       if (name === 'review-prompt') loadReviewPrompt();
@@ -440,6 +450,7 @@
     const managedLabels = {
       'review-rules': 'Review Rules',
       'code-specs': 'Code Specs',
+      'review-skill': 'Review Skill (SKILL.md)',
       'agent-documents': 'Agent Documents',
       'architecture-specs': 'Architecture Specs',
       'ubiquitous-language': 'Ubiquitous Language',
@@ -488,13 +499,14 @@
           </select>
           ${allowMultiple ? `<button class="secondary" onclick="newManagedDocument('${kind}')">New</button>` : ''}
           <button onclick="saveManagedDocument('${kind}')">Save &amp; Apply</button>
+          ${kind === 'review-skill' ? `<button class="secondary" onclick="syncReviewSkillFromRules()">Sync from Review Rules</button>` : ''}
           ${allowMultiple && current.id ? `<button class="secondary" onclick="deleteManagedDocument('${kind}')">Delete</button>` : ''}
           <button class="secondary" onclick="loadManagedDocuments('${kind}')">Reload</button>
           <span class="meta" id="managed-status-${kind}">Applied source: ChromaDB</span>
         </div>
         <div class="form-row">
           <label>Title</label>
-          <input id="managed-title-${kind}" value="${escapeHtml(current.title || '')}" oninput="markManagedDirty('${kind}')" style="width:100%" ${kind === 'agent-documents' ? 'readonly' : ''}/>
+          <input id="managed-title-${kind}" value="${escapeHtml(current.title || '')}" oninput="markManagedDirty('${kind}')" style="width:100%" ${kind === 'agent-documents' || kind === 'review-skill' ? 'readonly' : ''}/>
         </div>
         <div class="form-row">
           <label>${managedLabels[kind]} content</label>
@@ -543,6 +555,27 @@
         return;
       }
       await loadManagedDocuments(kind, data.id);
+      if (kind === 'review-rules' && Array.isArray(data.synced_skill_rule_ids) && data.synced_skill_rule_ids.length) {
+        const status = document.getElementById(`managed-status-${kind}`);
+        if (status) {
+          status.textContent = `Saved. Synced to Review Skill: ${data.synced_skill_rule_ids.join(', ')}`;
+        }
+        await loadManagedDocuments('review-skill');
+      }
+      refreshAll();
+    }
+
+    async function syncReviewSkillFromRules() {
+      const res = await fetch(`${API}/api/v1/knowledge/review-skill/sync-from-rules`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || 'Sync failed');
+        return;
+      }
+      alert(data.message || 'Sync complete');
+      if (data.synced) {
+        await loadManagedDocuments('review-skill');
+      }
       refreshAll();
     }
 
@@ -569,6 +602,10 @@
 
     async function loadCodeSpecs() {
       return loadManagedDocuments('code-specs');
+    }
+
+    async function loadReviewSkill() {
+      return loadManagedDocuments('review-skill');
     }
 
     async function loadUlDocs() {

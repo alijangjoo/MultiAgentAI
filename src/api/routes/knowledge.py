@@ -323,6 +323,27 @@ async def update_review_prompt_template(body: ReviewPromptUpdateRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/review-skill")
+async def get_review_skill():
+    return get_review_docs_service().get_review_skill()
+
+
+@router.put("/review-skill")
+async def update_review_skill(body: ReviewPromptUpdateRequest):
+    try:
+        return get_review_docs_service().save_review_skill(body.body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/review-skill/sync-from-rules")
+async def sync_review_skill_from_rules():
+    try:
+        return get_review_docs_service().sync_review_skill_from_active_rules()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/ingest/confluence")
 async def ingest_from_confluence(
     query: str = Query(default="API"),

@@ -27,6 +27,11 @@ class SentinelOutput(BaseModel):
     merge_request: MergeRequestInfo
     review: CodeReviewResult
     review_prompt: str = ""
+    cli_stdout: str = ""
+    cli_stderr: str = ""
+    cli_command: list[str] = Field(default_factory=list)
+    cli_returncode: int | None = None
+    cli_backend: str | None = None
 
 
 class ScribeOutput(BaseModel):

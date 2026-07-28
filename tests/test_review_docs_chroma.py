@@ -73,7 +73,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> review_docs.ReviewDocsService:
 def test_managed_defaults_are_seeded_in_chroma_without_splitting(
     service: review_docs.ReviewDocsService,
 ) -> None:
-    for kind in ("review-rules", "code-specs", "review-prompt", "agent-documents"):
+    for kind in ("review-rules", "code-specs", "review-prompt", "review-skill", "agent-documents"):
         items = service.list_managed_documents(kind)
         assert len(items) == 1
         assert items[0]["source"] == "chroma"
@@ -114,3 +114,27 @@ def test_collection_text_uses_full_chroma_content(
 
     assert "RR-001" in content
     assert "Sentinel Review Rules" in content
+
+
+def test_review_skill_is_loaded_and_updated_only_through_chroma(
+    service: review_docs.ReviewDocsService,
+) -> None:
+    skill = service.get_review_skill()
+    assert skill["source"] == "chroma"
+    assert skill["collection"] == "review_skill"
+    assert skill["name"] == "sentinel-review"
+    assert skill["body"].startswith("---")
+
+    updated = skill["body"] + "\n\n<!-- review skill marker -->"
+    result = service.save_review_skill(updated)
+
+    assert result["applied"] is True
+    assert service.get_review_skill()["body"] == updated
+
+
+def test_review_skill_rejects_invalid_frontmatter(
+    service: review_docs.ReviewDocsService,
+) -> None:
+    invalid = "---\nname: wrong-skill\n---\n\nRR-001 rule here."
+    with pytest.raises(ValueError, match="name: sentinel-review"):
+        service.save_review_skill(invalid)

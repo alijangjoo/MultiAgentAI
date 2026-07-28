@@ -39,12 +39,16 @@ class Settings(BaseSettings):
     cursor_cli_bin: str = "agent"
     cursor_cli_timeout_seconds: int = 300
     cursor_cli_output_format: str = "text"
+    cursor_cli_review_output_format: str = "json"
     cursor_cli_mode: str = "ask"
     # Review uses agent mode by default — ask mode often returns placeholder text instead of reviewing the diff.
     cursor_cli_review_mode: str = "agent"
     cursor_review_language: str = "en"
     cursor_review_include_specs: bool = False
     cursor_cli_review_use_workspace: bool = False
+    cursor_review_use_worktree: bool = True
+    cursor_review_worktree_root: str = ""
+    cursor_review_git_timeout_seconds: int = 90
     cursor_review_fallback_9router: bool = True
     http_proxy: str = ""
     https_proxy: str = ""

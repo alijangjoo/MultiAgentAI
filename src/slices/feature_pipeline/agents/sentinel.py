@@ -74,6 +74,8 @@ async def perform_code_review(
     state: SentinelState,
     integrations: IntegrationContainer,
     repo: AgentRunRepository,
+    *,
+    progress: "ReviewProgressReporter | None" = None,
 ) -> dict:
     mr = state["merge_request"]
     if not mr:
@@ -106,10 +108,16 @@ async def perform_code_review(
             mr_changes=mr_changes,
             repo=repo,
             knowledge_package=state.get("knowledge_package"),
+            progress=progress,
         )
         return {
             "review": result["review"],
             "review_prompt": result.get("prompt") or "",
+            "cli_stdout": result.get("cli_stdout") or "",
+            "cli_stderr": result.get("cli_stderr") or "",
+            "cli_command": result.get("cli_command") or [],
+            "cli_returncode": result.get("cli_returncode"),
+            "cli_backend": result.get("backend"),
             "error": None,
         }
     except Exception as exc:
@@ -148,11 +156,15 @@ def build_sentinel_graph(
 def build_sentinel_review_graph(
     integrations: IntegrationContainer,
     repo: AgentRunRepository,
+    *,
+    progress: "ReviewProgressReporter | None" = None,
 ) -> StateGraph:
     graph = StateGraph(SentinelState)
 
     async def review_node(state: SentinelState) -> dict:
-        return await perform_code_review(state, integrations, repo)
+        return await perform_code_review(
+            state, integrations, repo, progress=progress
+        )
 
     graph.add_node("code_review", review_node)
     graph.set_entry_point("code_review")
@@ -196,6 +208,11 @@ async def run_sentinel(
         merge_request=result["merge_request"],
         review=result["review"],
         review_prompt=result.get("review_prompt") or "",
+        cli_stdout=result.get("cli_stdout") or "",
+        cli_stderr=result.get("cli_stderr") or "",
+        cli_command=result.get("cli_command") or [],
+        cli_returncode=result.get("cli_returncode"),
+        cli_backend=result.get("cli_backend"),
     )
 
 
@@ -208,9 +225,10 @@ async def run_sentinel_review(
     integrations: IntegrationContainer,
     repo: AgentRunRepository,
     knowledge_package: ReviewKnowledgePackage | None = None,
+    progress: "ReviewProgressReporter | None" = None,
 ) -> SentinelOutput:
     """Review an existing merge request without creating a new one."""
-    graph = build_sentinel_review_graph(integrations, repo).compile()
+    graph = build_sentinel_review_graph(integrations, repo, progress=progress).compile()
     result = await graph.ainvoke(
         {
             "messages": [],
@@ -237,4 +255,9 @@ async def run_sentinel_review(
         merge_request=merge_request,
         review=result["review"],
         review_prompt=result.get("review_prompt") or "",
+        cli_stdout=result.get("cli_stdout") or "",
+        cli_stderr=result.get("cli_stderr") or "",
+        cli_command=result.get("cli_command") or [],
+        cli_returncode=result.get("cli_returncode"),
+        cli_backend=result.get("cli_backend"),
     )

@@ -6,6 +6,7 @@ from shared.agent_executors.review_executor import build_review_prompt
 from shared.cursor_cli.response_parser import is_incomplete_review_response
 from shared.cursor_cli.context_builder import build_review_context
 from shared.cursor_cli.prompt_builder import build_review_prompt as build_cli_review_prompt
+from shared.cursor_cli.review_workspace import review_workspace_enabled
 from shared.integrations.registry import get_integrations
 from shared.utils.token_count import count_text_tokens
 from shared.models.domain import (
@@ -21,6 +22,7 @@ from shared.persistence.repository import AgentRunRepository, HITLRepository
 from shared.deploy_settings.store import get_deploy_branch_settings
 from slices.feature_pipeline.agents.sentinel import run_sentinel_review
 from slices.knowledge.review_package import KnowledgePackageError, build_review_knowledge_package
+from shared.review.progress import ReviewProgressReporter
 
 
 def _extract_task_key(title: str, source_branch: str = "") -> str:
@@ -238,9 +240,11 @@ class GitLabMRService:
             knowledge_package=knowledge_package,
             language=settings.cursor_review_language,
         )
+        if review_workspace_enabled():
+            review_context = review_context.model_copy(update={"use_review_skill": True})
         cli_prompt = build_cli_review_prompt(
             review_context,
-            output_format=settings.cursor_cli_output_format,
+            output_format=settings.cursor_cli_review_output_format,
         )
         return {
             "mr_iid": mr_iid,
@@ -255,6 +259,7 @@ class GitLabMRService:
             "legacy_review_prompt": prompt,
             "review_context": review_context.model_dump(),
             "review_model": settings.code_review_model,
+            "review_mode": "skill-worktree" if review_workspace_enabled() else "inline",
             "sections": {
                 "task_prd": bool(knowledge_package.prd and len(knowledge_package.prd) > 30),
                 "code_specs": bool(
@@ -277,8 +282,13 @@ class GitLabMRService:
         self,
         mr_iid: int,
         reviewed_by: str = "tech-lead@company.local",
+        progress: ReviewProgressReporter | None = None,
     ) -> dict:
+        progress = progress or ReviewProgressReporter()
+        await progress.log("start", f"Sentinel review started for MR !{mr_iid}")
+
         integrations = get_integrations()
+        await progress.log("fetch_mr", "Fetching merge request from GitLab")
         mr_data = await integrations.gitlab.get_merge_request(mr_iid)
         if not mr_data.get("iid"):
             raise ValueError(f"Merge request !{mr_iid} not found")
@@ -296,10 +306,20 @@ class GitLabMRService:
             source_branch=mr_data["source_branch"],
             target_branch=mr_data["target_branch"],
         )
+        await progress.log("fetch_diff", "Loading MR file changes (unified diff)")
         mr_changes = await integrations.gitlab.get_merge_request_changes(mr_iid)
+        await progress.log(
+            "fetch_diff",
+            f"Diff loaded — {len(mr_changes or [])} changed file(s)",
+            files=len(mr_changes or []),
+        )
         task_key = _extract_task_key(merge_request.title, merge_request.source_branch)
         development_summary = mr_data.get("description") or merge_request.title
 
+        await progress.log(
+            "knowledge",
+            f"Building knowledge package (Jira {task_key or '—'}, Chroma specs/rules)",
+        )
         try:
             knowledge_package = await build_review_knowledge_package(
                 task_key=task_key,
@@ -310,6 +330,8 @@ class GitLabMRService:
         except KnowledgePackageError as exc:
             raise ValueError(str(exc)) from exc
 
+        await progress.log("knowledge", "Knowledge package validated")
+        await progress.log("run", "Creating agent run record")
         run_id = await self._run_repo.create_run(
             workflow_type=WorkflowType.MR_CODE_REVIEW.value,
             agent_name=AgentName.SENTINEL,
@@ -323,6 +345,10 @@ class GitLabMRService:
         await self._run_repo.update_run(run_id, status=RunStatus.RUNNING)
 
         try:
+            await progress.log(
+                "sentinel",
+                "Running Sentinel agent (worktree + skill + Cursor CLI subprocess)",
+            )
             output = await run_sentinel_review(
                 run_id=run_id,
                 merge_request=merge_request,
@@ -332,6 +358,7 @@ class GitLabMRService:
                 integrations=integrations,
                 repo=self._run_repo,
                 knowledge_package=knowledge_package,
+                progress=progress,
             )
             review = output.review
             if not review:
@@ -359,6 +386,7 @@ class GitLabMRService:
                 raise RuntimeError(review.summary or "Cursor CLI did not produce a code review")
 
             note_body = _format_review_note(review, run_id=run_id)
+            await progress.log("gitlab_note", "Posting review summary as GitLab MR comment")
             try:
                 await integrations.gitlab.create_merge_request_note(mr_iid, note_body)
                 note_posted = True
@@ -379,6 +407,7 @@ class GitLabMRService:
                 reviewed_by=reviewed_by,
                 note_posted=note_posted,
             )
+            await progress.log("hitl", "HITL checkpoint created — awaiting Tech Lead approval")
 
             await self._run_repo.update_run(
                 run_id,
@@ -387,11 +416,21 @@ class GitLabMRService:
                     "mr_iid": mr_iid,
                     "review": review.model_dump(),
                     "review_prompt": output.review_prompt,
+                    "cli_stdout": output.cli_stdout,
+                    "cli_stderr": output.cli_stderr,
+                    "cli_command": output.cli_command,
+                    "cli_returncode": output.cli_returncode,
+                    "cli_backend": output.cli_backend,
                     "merge_request_url": merge_request.url,
                     "note_posted": note_posted,
                     "hitl_checkpoint_id": checkpoint_id,
                     "knowledge_package_task": task_key,
                 },
+            )
+            await progress.log(
+                "done",
+                f"Review complete — {'APPROVED' if review.approved else 'CHANGES REQUESTED'}",
+                approved=review.approved,
             )
             return {
                 "run_id": run_id,
@@ -400,6 +439,11 @@ class GitLabMRService:
                 "merge_request_url": merge_request.url,
                 "review": review.model_dump(),
                 "review_prompt": output.review_prompt,
+                "cli_stdout": output.cli_stdout,
+                "cli_stderr": output.cli_stderr,
+                "cli_command": output.cli_command,
+                "cli_returncode": output.cli_returncode,
+                "cli_backend": output.cli_backend,
                 "prompt_tokens": count_text_tokens(output.review_prompt),
                 "hitl_checkpoint_id": checkpoint_id,
                 "note_posted": note_posted,
@@ -410,6 +454,7 @@ class GitLabMRService:
                 ),
             }
         except Exception as exc:
+            await progress.log("error", str(exc), level="error")
             await self._run_repo.update_run(
                 run_id,
                 status=RunStatus.FAILED,
@@ -439,6 +484,11 @@ class GitLabMRService:
                 "merge_request_url": out.get("merge_request_url") or "",
                 "review": review,
                 "review_prompt": prompt,
+                "cli_stdout": out.get("cli_stdout") or "",
+                "cli_stderr": out.get("cli_stderr") or "",
+                "cli_command": out.get("cli_command") or [],
+                "cli_returncode": out.get("cli_returncode"),
+                "cli_backend": out.get("cli_backend"),
                 "prompt_tokens": count_text_tokens(prompt) if prompt else 0,
                 "note_posted": out.get("note_posted"),
                 "created_at": run.get("created_at", ""),

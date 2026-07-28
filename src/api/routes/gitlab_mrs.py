@@ -1,4 +1,11 @@
+import asyncio
+import json
+
+import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+
+from core.config import get_settings
 
 from api.schemas.requests import (
     MergeRequestByEnvironmentResponse,
@@ -13,6 +20,7 @@ from api.schemas.requests import (
     MergeRequestStatusResponse,
 )
 from api.services.gitlab_mr_service import GitLabMRService
+from shared.review.progress import ReviewProgressReporter
 
 router = APIRouter(prefix="/api/v1/gitlab", tags=["gitlab"])
 
@@ -24,6 +32,30 @@ def _get_service() -> GitLabMRService:
     if _service is None:
         _service = GitLabMRService()
     return _service
+
+
+@router.get("/cursor-bridge/health")
+async def cursor_bridge_health_proxy():
+    """Proxy Bridge /health for the Review dashboard (browser cannot call Bridge directly — no CORS)."""
+    settings = get_settings()
+    url = f"{settings.cursor_bridge_url.rstrip('/')}/health"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url)
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Cursor Bridge not reachable at {url}. "
+                "Start it with: python run_cursor_bridge.py"
+            ),
+        ) from exc
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cursor Bridge health check failed: HTTP {response.status_code}",
+        )
+    return response.json()
 
 
 @router.get("/merge-requests", response_model=MergeRequestListResponse)
@@ -109,6 +141,51 @@ async def review_merge_request(mr_iid: int, request: MergeRequestReviewRequest |
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return MergeRequestReviewResponse(**result)
+
+
+@router.post("/merge-requests/{mr_iid}/review/stream")
+async def review_merge_request_stream(
+    mr_iid: int, request: MergeRequestReviewRequest | None = None
+):
+    """Run Sentinel review and stream live step logs (SSE, not persisted)."""
+    request = request or MergeRequestReviewRequest()
+    queue: asyncio.Queue[tuple[str, dict] | None] = asyncio.Queue()
+
+    async def emit_event(event: str, payload: dict) -> None:
+        await queue.put((event, payload))
+
+    progress = ReviewProgressReporter(emit_event=emit_event)
+
+    async def run_review() -> None:
+        try:
+            result = await _get_service().review_merge_request(
+                mr_iid=mr_iid,
+                reviewed_by=request.reviewed_by,
+                progress=progress,
+            )
+            await queue.put(("result", result))
+        except ValueError as exc:
+            await queue.put(("error", {"message": str(exc), "status": 400}))
+        except Exception as exc:
+            await queue.put(("error", {"message": str(exc), "status": 500}))
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(run_review())
+
+    async def event_stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            event, payload = item
+            yield f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/merge-requests/{mr_iid}/merge", response_model=MergeRequestMergeResponse)

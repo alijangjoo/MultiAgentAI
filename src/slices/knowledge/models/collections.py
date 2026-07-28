@@ -13,6 +13,7 @@ class KnowledgeCollection(StrEnum):
     REVIEW_RULES = "review_rules"
     CODE_SPECS = "code_specs"
     REVIEW_PROMPT = "review_prompt"
+    REVIEW_SKILL = "review_skill"
     AGENT_DOCUMENTS = "agent_documents"
     UBIQUITOUS_LANGUAGE = "ubiquitous_language"
     DATABASE_SCHEMA = "database_schema"
@@ -30,6 +31,7 @@ COLLECTION_LABELS: dict[str, str] = {
     KnowledgeCollection.REVIEW_RULES: "Sentinel Review Rules",
     KnowledgeCollection.CODE_SPECS: "Code Specs",
     KnowledgeCollection.REVIEW_PROMPT: "Review Prompt Template",
+    KnowledgeCollection.REVIEW_SKILL: "Sentinel Review Skill (Cursor)",
     KnowledgeCollection.AGENT_DOCUMENTS: "Agent Document Catalog",
     KnowledgeCollection.UBIQUITOUS_LANGUAGE: "Ubiquitous Language (*_UL.md)",
     KnowledgeCollection.DATABASE_SCHEMA: "Dizi MySQL Schema (Dev / Stage)",

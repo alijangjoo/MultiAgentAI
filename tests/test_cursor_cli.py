@@ -51,6 +51,18 @@ def test_should_fallback_on_unavailable():
     assert should_fallback_from_cursor_cli("", "Error: [unavailable]") is True
 
 
+def test_should_not_fallback_on_permission_denied():
+    from shared.cursor_cli.fallback import (
+        should_fallback_from_cursor_cli,
+        summarize_cursor_cli_failure,
+    )
+
+    err = "RetriableError: [permission_denied] Cu"
+    assert should_fallback_from_cursor_cli(err, "") is False
+    summary = summarize_cursor_cli_failure(err, "")
+    assert "CURSOR_API_KEY" in summary
+
+
 def test_build_command_stays_short_on_windows_for_large_prompt(monkeypatch):
     monkeypatch.setattr("shared.cursor_cli.runner.os.name", "nt")
     from core.config import Settings

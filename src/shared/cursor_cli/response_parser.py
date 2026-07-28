@@ -31,6 +31,33 @@ def _has_substantive_findings(findings: list[str]) -> bool:
     return False
 
 
+def _is_empty_shell_review(parsed: dict[str, Any]) -> bool:
+    """True when the model returned JSON with no summary, findings, or suggestions."""
+    summary = str(parsed.get("summary") or "").strip()
+    findings = parsed.get("findings") or []
+    suggestions = parsed.get("suggestions") or []
+    if summary:
+        return False
+    return not findings and not suggestions
+
+
+def is_empty_shell_stdout(text: str) -> bool:
+    """Detect raw CLI JSON with no summary, findings, or suggestions."""
+    body = (text or "").strip()
+    if not body:
+        return True
+    match = re.search(r"\{[\s\S]*\}", body)
+    if not match:
+        return False
+    try:
+        data = json.loads(match.group())
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return _is_empty_shell_review(_normalize_review_dict(data))
+
+
 def is_incomplete_review_response(text: str, parsed: dict[str, Any] | None = None) -> bool:
     """True when CLI returned a preamble/disclaimer instead of reviewing the diff."""
     body = (text or "").strip()
@@ -39,6 +66,9 @@ def is_incomplete_review_response(text: str, parsed: dict[str, Any] | None = Non
 
     parsed = parsed or {}
     findings = parsed.get("findings") or []
+
+    if _is_empty_shell_review(parsed):
+        return True
 
     if _parse_verdict(body) is not None and _has_substantive_findings(findings):
         return False
@@ -188,6 +218,20 @@ def _parse_text_findings(text: str) -> tuple[list[str], list[str]]:
     return findings, suggestions
 
 
+def _incomplete_review_payload(reason: str) -> dict[str, Any]:
+    return {
+        "approved": False,
+        "summary": reason,
+        "findings": [
+            "[ERROR] No substantive code review was produced. "
+            "The model returned an empty or placeholder JSON response."
+        ],
+        "suggestions": [
+            "Re-run the review. Verify Review Rules are inlined in the prompt and the git diff is non-empty.",
+        ],
+    }
+
+
 def parse_review_response(content: str) -> dict[str, Any]:
     """Convert Cursor CLI stdout to AgentFramework review dict."""
     text = (content or "").strip()
@@ -204,7 +248,18 @@ def parse_review_response(content: str) -> dict[str, Any]:
         try:
             data = json.loads(match.group())
             if isinstance(data, dict):
-                return _normalize_review_dict(data)
+                result = _normalize_review_dict(data)
+                if _is_empty_shell_review(result):
+                    return _incomplete_review_payload(
+                        "Review did not run — Cursor CLI returned empty JSON "
+                        "(approved with no summary, findings, or suggestions)."
+                    )
+                if is_incomplete_review_response(text, result):
+                    return _incomplete_review_payload(
+                        "Review did not run — Cursor CLI returned a placeholder message "
+                        "instead of analyzing the git diff."
+                    )
+                return result
         except json.JSONDecodeError:
             pass
 
@@ -224,18 +279,8 @@ def parse_review_response(content: str) -> dict[str, Any]:
         "suggestions": suggestions,
     }
     if is_incomplete_review_response(text, result):
-        return {
-            "approved": False,
-            "summary": (
-                "Review did not run — Cursor CLI returned a placeholder message "
-                "instead of analyzing the git diff."
-            ),
-            "findings": [
-                "[ERROR] No code review was produced (Ask-mode disclaimer or missing Verdict/findings). "
-                "Re-run Review after verifying the diff is included in the prompt."
-            ],
-            "suggestions": [
-                "Check Cursor CLI logs and ensure MR diff is not empty/truncated to zero.",
-            ],
-        }
+        return _incomplete_review_payload(
+            "Review did not run — Cursor CLI returned a placeholder message "
+            "instead of analyzing the git diff."
+        )
     return result

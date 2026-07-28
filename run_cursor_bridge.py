@@ -16,6 +16,16 @@ try:
 except ImportError:
     pass
 
+# Ensure CLI subprocess sees the key when pydantic loaded it from .env
+try:
+    from core.config import get_settings
+
+    _key = get_settings().cursor_api_key.strip()
+    if _key and not os.environ.get("CURSOR_API_KEY", "").strip():
+        os.environ["CURSOR_API_KEY"] = _key
+except Exception:
+    pass
+
 if __name__ == "__main__":
     port = int(os.environ.get("CURSOR_BRIDGE_PORT", "9090"))
     uvicorn.run(

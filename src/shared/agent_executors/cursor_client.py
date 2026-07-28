@@ -1,5 +1,6 @@
 """HTTP client for the local Cursor Bridge (git-aware develop/review on Windows clone)."""
 
+import json
 from typing import Any
 
 import httpx
@@ -10,6 +11,31 @@ from shared.cursor_cli.model_utils import normalize_cursor_cli_model
 
 class CursorBridgeError(Exception):
     pass
+
+
+def _parse_bridge_error(response: httpx.Response) -> str:
+    """Extract a human-readable message from Bridge/FastAPI error bodies."""
+    text = (response.text or "").strip()
+    if not text:
+        return f"HTTP {response.status_code}"
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            detail = data.get("detail")
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()
+            if detail is not None:
+                return str(detail)
+    except json.JSONDecodeError:
+        pass
+    if text.startswith("{") and '"detail"' in text:
+        try:
+            detail = json.loads(text).get("detail")
+            if isinstance(detail, str):
+                return detail
+        except json.JSONDecodeError:
+            pass
+    return text[:500]
 
 
 async def cursor_bridge_develop(
@@ -38,8 +64,7 @@ async def cursor_bridge_develop(
                 "Start it with: python run_cursor_bridge.py"
             ) from exc
         if response.status_code >= 400:
-            detail = response.text[:500]
-            raise CursorBridgeError(f"Cursor Bridge develop failed: {detail}")
+            raise CursorBridgeError(f"Cursor Bridge develop failed: {_parse_bridge_error(response)}")
         return response.json()
 
 
@@ -50,6 +75,7 @@ async def cursor_bridge_review(
     branch_name: str,
     context: dict[str, Any],
     model: str | None = None,
+    workspace: str | None = None,
     output_format: str | None = None,
     mode: str | None = None,
     timeout_seconds: int | None = None,
@@ -65,10 +91,12 @@ async def cursor_bridge_review(
         "model": normalize_cursor_cli_model(
             model or settings.cursor_model or settings.code_review_model
         ),
-        "output_format": output_format or settings.cursor_cli_output_format,
+        "output_format": output_format or settings.cursor_cli_review_output_format,
         "mode": mode or settings.cursor_cli_review_mode or settings.cursor_cli_mode,
         "timeout_seconds": timeout_seconds or settings.cursor_cli_timeout_seconds,
     }
+    if workspace:
+        payload["workspace"] = workspace
     timeout = float(timeout_seconds or settings.cursor_cli_timeout_seconds) + 60.0
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -79,6 +107,5 @@ async def cursor_bridge_review(
                 "Start it with: python run_cursor_bridge.py"
             ) from exc
         if response.status_code >= 400:
-            detail = response.text[:500]
-            raise CursorBridgeError(f"Cursor Bridge review failed: {detail}")
+            raise CursorBridgeError(_parse_bridge_error(response))
         return response.json()

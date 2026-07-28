@@ -87,6 +87,126 @@ Rules define review decisions and severity. Technical implementation details bel
 - RR-008 [WARNING] Endpoint methods should remain thin and delegate business behavior to Application.
 - RR-009 [WARNING] Public Application entry points should follow the active Code Specs.
 - RR-010 [SUGGESTION] Prefer established Ubiquitous Language terms over new synonyms.
+- RR-012 [WARNING] In every `.cs` file, the `namespace` declaration must be the first code construct (before `using` directives). File-scoped namespaces are preferred.
+- RR-013 [ERROR] Every `*CommandHandler.cs` must have a sibling `*CommandValidator.cs` using FluentValidation (`AbstractValidator<TCommand>`).
+- RR-014 [WARNING] A `.cs` file must not contain trailing blank lines after the final closing brace. The last line of the file must be `}`.
+- RR-015 [WARNING] Application/Infrastructure handlers and services must log at method entry and before each return (structured `ILogger` / `LogInformation` or appropriate level).
+- RR-016 [ERROR] `Dizi.AppCore.Domain` must not contain logging, NuGet/package references, or `using` to non-BCL libraries.
+"""
+
+_DEFAULT_REVIEW_SKILL = """---
+name: sentinel-review
+description: Review C# code against Sentinel architecture rules including DDD, CQRS, and logging guidelines
+version: 1.1.0
+author: Sentinel Team
+tags: [csharp, ddd, cqrs, architecture, code-review]
+---
+
+# Sentinel Code Review Skill
+
+## Purpose
+Review C# MR changes against Sentinel architecture rules: DDD layering, CQRS, file structure, async/logging best practices.
+
+## Output contract
+Return one JSON object with keys: `approved` (bool), `summary` (string), `findings` (array of strings), `suggestions` (array of strings).
+Each finding/suggestion MUST be a single string like `[ERROR] path/File.cs:12 - message`. Use LINE=0 when unknown.
+Set `approved=false` when any merge-blocking rule is violated.
+
+## Rules
+
+### Architecture & Domain Purity
+
+#### RR-001 [ERROR] — Domain layer isolation
+Domain must not reference Infrastructure, Application, Endpoints, or external application projects.
+
+Detection pattern:
+```regex
+using\\s+(Dizi\\.AppCore\\.(Infrastructure|Application|Endpoints)|Microsoft\\.Extensions\\.Logging)
+```
+
+#### RR-002 [ERROR] — Query side effects
+Queries must not mutate state or perform write side effects.
+
+#### RR-003 [ERROR] — Secrets in source
+Secrets, credentials, or private keys must not be committed.
+
+#### RR-004 [ERROR] — Authorization bypass
+Authorization or tenancy checks must not be bypassed.
+
+### Async & Logging
+
+#### RR-005 [WARNING] — CancellationToken
+Async I/O paths should accept and propagate CancellationToken.
+
+#### RR-006 [WARNING] — Blocking async
+Request paths must not use `.Result`, `.Wait()`, or `GetAwaiter().GetResult()`.
+
+#### RR-007 [WARNING] — Empty catch blocks
+Empty catch blocks are not allowed; failures must be logged or mapped intentionally.
+
+### Application structure
+
+#### RR-008 [WARNING] — Thin endpoints
+Endpoint methods should remain thin and delegate business behavior to Application.
+
+#### RR-009 [WARNING] — Application entry points
+Public Application entry points should follow the active Code Specs.
+
+#### RR-010 [SUGGESTION] — Ubiquitous Language
+Prefer established Ubiquitous Language terms over new synonyms.
+
+### File layout & CQRS conventions
+
+#### RR-012 [WARNING] — Namespace first
+In every `.cs` file, the `namespace` declaration must be the first code construct (before `using` directives). File-scoped namespaces are preferred.
+
+**Correct:**
+```csharp
+namespace Dizi.AppCore.Domain.ShareDeliveries.Entities;
+using Dizi.AppCore.Domain.Base;
+public class ShareDelivery : AggregateRoot {}
+```
+
+**Wrong:** `using` statements before `namespace`.
+
+Detection: in changed hunks, first non-blank/non-comment line is `using` while `namespace` appears later.
+
+#### RR-013 [ERROR] — CommandValidator sibling
+For every new or changed `*CommandHandler.cs`, a matching `*CommandValidator.cs` must exist in the same MR.
+
+Example pair:
+- `CreateRealVendorContractCommandHandler.cs`
+- `CreateRealVendorContractCommandValidator.cs`
+
+Validator must inherit `AbstractValidator<TCommand>` and validate input with `RuleFor(...)` (e.g. `NotEmpty().WithMessage(...)`).
+
+#### RR-014 [WARNING] — No trailing blank line
+A `.cs` file must not contain trailing blank lines after the final closing brace. The last line of the file must be `}`.
+
+Detection: diff adds `\n` after final `}` or file ends with blank line.
+
+### Logging
+
+#### RR-015 [WARNING] — Handler entry/exit logging
+Public handlers (Commands/Queries) in Application/Infrastructure must:
+- Log at **method start** (`LogInformation("Handle started for ...")` or equivalent).
+- Log **before each return** path (`LogInformation("Handle completed ...")` / `LogWarning` when applicable).
+- Use structured placeholders (`{VendorCode}`, not string concat).
+
+Domain layer is **exempt** — see RR-016.
+
+#### RR-016 [ERROR] — Domain purity (no logging, no packages)
+`Dizi.AppCore.Domain` (and subfolders) must **not**:
+- Use `ILogger`, `Microsoft.Extensions.Logging`, or any logging call.
+- Reference NuGet packages or project references beyond BCL / allowed domain primitives.
+- Contain `using` to Infrastructure, Application, Endpoints, EF, HTTP clients, etc.
+
+Detection patterns:
+```regex
+namespace\\s+Dizi\\.AppCore\\.Domain[\\s\\S]*?(ILogger|LogInformation|LogWarning|LogError|Microsoft\\.Extensions\\.Logging)
+```
+
+Domain `.csproj` must not list PackageReference entries (except whitelisted BCL-only if any).
 """
 
 _DEFAULT_CODE_SPECS = """# Dizi Code Specs
@@ -123,11 +243,53 @@ This catalog describes ownership and separation of review knowledge:
 - Review Rules (`review_rules`): enforceable checks and severity only.
 - Code Specs (`code_specs`): accepted technical structures and examples; no severity.
 - Review Prompt (`review_prompt`): orchestration, placeholders, and output contract only.
+- Review Skill (`review_skill`): Cursor SKILL.md for workspace-based Sentinel reviews; materialized to `.cursor/skills/sentinel-review/`.
 - Agent Documents (`agent_documents`): governance and collection ownership; never injected into a review prompt.
 - Architecture Specs (`architecture_spec`), ADR (`adr`), and Ubiquitous Language (`ubiquitous_language`): optional domain context.
 
 All active content is stored, edited, and read from ChromaDB. Physical markdown files are not runtime sources.
 """
+
+_RULE_LINE = re.compile(r"^- RR-(\d+) \[(\w+)\] (.+)$", re.MULTILINE)
+_SKILL_RULE_HEADING = re.compile(r"^#{3,4} RR-(\d+) \[", re.MULTILINE)
+
+
+def sync_review_skill_from_rules(review_rules: str, skill_body: str) -> tuple[str, list[str]]:
+    """Append Review Rules entries that are missing from Review Skill (by RR id)."""
+    rules_text = (review_rules or "").strip()
+    skill_text = (skill_body or "").strip()
+    if not rules_text or not skill_text:
+        return skill_text, []
+
+    present = set(_SKILL_RULE_HEADING.findall(skill_text))
+    additions: list[str] = []
+    added_ids: list[str] = []
+
+    for rule_id, severity, description in _RULE_LINE.findall(rules_text):
+        if rule_id in present:
+            continue
+        heading = description.split(".")[0].strip() or description.strip()
+        additions.append(
+            f"\n#### RR-{rule_id} [{severity}] — {heading}\n{description.strip()}\n"
+        )
+        added_ids.append(f"RR-{rule_id}")
+        present.add(rule_id)
+
+    if not additions:
+        return skill_text, []
+
+    marker = "### File layout & CQRS conventions"
+    if marker in skill_text:
+        idx = skill_text.find("### Logging")
+        if idx == -1:
+            updated = skill_text.rstrip() + "\n" + "".join(additions)
+        else:
+            updated = skill_text[:idx] + "".join(additions) + skill_text[idx:]
+    else:
+        updated = skill_text.rstrip() + "\n\n## Synced rules\n" + "".join(additions)
+
+    return updated, added_ids
+
 
 _MANAGED_KINDS: dict[str, tuple[str, str, str, str]] = {
     "review-rules": (
@@ -147,6 +309,12 @@ _MANAGED_KINDS: dict[str, tuple[str, str, str, str]] = {
         "sentinel-review-prompt",
         "Sentinel Review Prompt Template",
         _DEFAULT_PROMPT,
+    ),
+    "review-skill": (
+        KnowledgeCollection.REVIEW_SKILL.value,
+        "sentinel-review-skill",
+        "Sentinel Review Skill",
+        _DEFAULT_REVIEW_SKILL,
     ),
     "agent-documents": (
         KnowledgeCollection.AGENT_DOCUMENTS.value,
@@ -242,6 +410,10 @@ class ReviewDocsService:
             self.validate_prompt_template(text)
             doc_id = default_id
             title = default_title
+        if kind == "review-skill":
+            self.validate_review_skill(text)
+            doc_id = default_id
+            title = default_title
         if doc_id:
             stable_id = doc_id.strip()
         elif kind in {
@@ -262,6 +434,9 @@ class ReviewDocsService:
             source="chroma-managed",
             split=False,
         )
+        synced_rule_ids: list[str] = []
+        if kind == "review-rules" and stable_id == default_id:
+            synced_rule_ids = self._sync_skill_after_rules_save(text)
         return {
             "id": stable_id,
             "kind": kind,
@@ -271,6 +446,7 @@ class ReviewDocsService:
             "chunks_created": result["chunks_created"],
             "source": "chroma",
             "applied": True,
+            "synced_skill_rule_ids": synced_rule_ids,
         }
 
     def delete_managed_document(self, kind: str, doc_id: str) -> int:
@@ -278,7 +454,11 @@ class ReviewDocsService:
         detail = self._store.get_document(doc_id)
         if not detail or detail.get("collection") != collection:
             return 0
-        if doc_id == default_id and kind in {"review-prompt", "agent-documents"}:
+        if doc_id == default_id and kind in {
+            "review-prompt",
+            "review-skill",
+            "agent-documents",
+        }:
             raise ValueError(f"The active {kind} document cannot be deleted")
         return self._store.delete_document(doc_id)
 
@@ -349,6 +529,89 @@ class ReviewDocsService:
             "saved": True,
             "applied": True,
         }
+
+    def get_review_skill(self) -> dict[str, Any]:
+        _collection, doc_id, _title, _content = self._kind_config("review-skill")
+        detail = self._store.get_document(doc_id)
+        if not detail:
+            self.ensure_defaults()
+            detail = self._store.get_document(doc_id)
+        if not detail:
+            raise RuntimeError("Active review skill is missing from ChromaDB")
+        return {
+            "id": doc_id,
+            "name": "sentinel-review",
+            "body": str(detail.get("content") or "").strip(),
+            "source": "chroma",
+            "collection": KnowledgeCollection.REVIEW_SKILL.value,
+            "editable": True,
+        }
+
+    def save_review_skill(self, body: str) -> dict[str, Any]:
+        saved = self.upsert_managed_document("review-skill", content=body)
+        return {
+            "id": saved["id"],
+            "name": "sentinel-review",
+            "body": saved["content"],
+            "source": "chroma",
+            "collection": saved["collection"],
+            "saved": True,
+            "applied": True,
+        }
+
+    def sync_review_skill_from_active_rules(self) -> dict[str, Any]:
+        """Copy missing RR-xxx entries from active Review Rules into Review Skill."""
+        rules_doc = self._store.get_document("sentinel-review-rules")
+        if not rules_doc:
+            self.ensure_defaults()
+            rules_doc = self._store.get_document("sentinel-review-rules")
+        if not rules_doc:
+            raise RuntimeError("Active review rules document not found in ChromaDB")
+
+        skill = self.get_review_skill()
+        updated_body, added_ids = sync_review_skill_from_rules(
+            str(rules_doc.get("content") or ""),
+            skill["body"],
+        )
+        if not added_ids:
+            return {
+                "synced": False,
+                "added_rule_ids": [],
+                "message": "Review Skill already contains all Review Rules entries.",
+            }
+
+        saved = self.save_review_skill(updated_body)
+        return {
+            "synced": True,
+            "added_rule_ids": added_ids,
+            "message": f"Added {len(added_ids)} rule(s) to Review Skill: {', '.join(added_ids)}",
+            "body": saved["body"],
+        }
+
+    def _sync_skill_after_rules_save(self, review_rules: str) -> list[str]:
+        try:
+            skill = self.get_review_skill()
+            updated_body, added_ids = sync_review_skill_from_rules(review_rules, skill["body"])
+            if not added_ids:
+                return []
+            self.save_review_skill(updated_body)
+            return added_ids
+        except Exception:
+            return []
+
+    @staticmethod
+    def validate_review_skill(body: str) -> None:
+        text = (body or "").strip()
+        if not text.startswith("---"):
+            raise ValueError("Review skill must start with YAML frontmatter (---)")
+        end = text.find("\n---", 3)
+        if end == -1:
+            raise ValueError("Review skill frontmatter must close with ---")
+        frontmatter = text[3:end]
+        if not re.search(r"^name:\s*sentinel-review\s*$", frontmatter, re.MULTILINE):
+            raise ValueError("Review skill frontmatter must include name: sentinel-review")
+        if "RR-001" not in text:
+            raise ValueError("Review skill body must include rule RR-001")
 
     @staticmethod
     def validate_prompt_template(body: str) -> None:

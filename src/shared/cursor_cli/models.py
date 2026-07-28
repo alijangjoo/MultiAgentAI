@@ -16,6 +16,10 @@ class ReviewContext(BaseModel):
         description="Additional named sections (ADRs, tech stack, etc.)",
     )
     language: str = Field(default="en", description="Review response language (e.g. en, fa)")
+    use_review_skill: bool = Field(
+        default=False,
+        description="When true, prompt instructs Cursor to apply .cursor/skills/sentinel-review",
+    )
 
 
 class ReviewRequest(BaseModel):

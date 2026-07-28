@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -6,10 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import Settings, get_settings
+from shared.cursor_cli.diff_rule_scanner import scan_diff_for_review
 from shared.cursor_cli.model_utils import normalize_cursor_cli_model
 from shared.cursor_cli.models import CursorCliResult, ReviewContext, ReviewRequest
 from shared.cursor_cli.prompt_builder import build_review_prompt
-from shared.cursor_cli.response_parser import is_incomplete_review_response, parse_review_response
+from shared.cursor_cli.response_parser import (
+    is_empty_shell_stdout,
+    is_incomplete_review_response,
+    parse_review_response,
+)
 
 
 class CursorCliError(Exception):
@@ -138,14 +144,25 @@ def _resolve_review_model(settings: Settings, model: str | None) -> str | None:
     return normalized or None
 
 
+def _resolve_review_output_format(settings: Settings, output_format: str | None) -> str:
+    return (
+        (output_format or settings.cursor_cli_review_output_format or settings.cursor_cli_output_format)
+        .strip()
+        or "json"
+    )
+
+
 def _resolve_output_format(settings: Settings, output_format: str | None) -> str:
     return (output_format or settings.cursor_cli_output_format).strip() or "text"
 
 
 def _resolve_workspace(settings: Settings, workspace: str | None) -> str | None:
+    explicit = (workspace or "").strip()
+    if explicit:
+        return explicit
     if not settings.cursor_cli_review_use_workspace:
-        return (workspace or "").strip() or None
-    chosen = (workspace or settings.cursor_repo_path or "").strip()
+        return None
+    chosen = (settings.cursor_repo_path or "").strip()
     return chosen or None
 
 
@@ -175,8 +192,8 @@ def _build_command_base(
     output_format: str | None,
     mode: str | None,
 ) -> list[str]:
-    fmt = _resolve_output_format(settings, output_format)
-    agent_mode = (mode or settings.cursor_cli_mode).strip() or "ask"
+    fmt = _resolve_review_output_format(settings, output_format)
+    agent_mode = (mode or settings.cursor_cli_review_mode or settings.cursor_cli_mode).strip() or "agent"
     chosen_model = _resolve_review_model(settings, model)
     chosen_workspace = _resolve_workspace(settings, workspace)
 
@@ -363,8 +380,19 @@ def _truncate_diff_for_argv(
     )
 
 
-def _model_attempts(settings: Settings, model: str | None) -> list[str | None]:
+def _model_attempts(
+    settings: Settings, model: str | None, *, use_review_skill: bool = False
+) -> list[str | None]:
     primary = _resolve_review_model(settings, model)
+    if use_review_skill:
+        attempts: list[str | None] = []
+        if primary:
+            attempts.append(primary)
+        for fallback in ("auto", "composer-2.5-fast"):
+            if fallback not in attempts:
+                attempts.append(fallback)
+        attempts.append(None)
+        return attempts
     attempts: list[str | None] = []
     if primary:
         attempts.append(primary)
@@ -380,8 +408,8 @@ def _resolve_review_mode(settings: Settings, mode: str | None) -> str:
 
 def _is_placeholder_stdout(stdout: str) -> bool:
     text = (stdout or "").strip()
-    if not text:
-        return False
+    if not text or is_empty_shell_stdout(text):
+        return True
     parsed = parse_review_response(text)
     return is_incomplete_review_response(text, parsed)
 
@@ -394,13 +422,23 @@ def _review_attempt_plans(
     settings: Settings,
     mode: str | None,
     output_format: str | None,
+    *,
+    use_review_skill: bool = False,
 ) -> list[tuple[str | None, str | None]]:
     """Mode/format attempts: configured first, then agent+json retry on placeholder."""
+    if use_review_skill:
+        return [
+            ("agent", "json"),
+            ("ask", "json"),
+            ("agent", "text"),
+        ]
+
     resolved_mode = _resolve_review_mode(settings, mode)
-    resolved_fmt = _resolve_output_format(settings, output_format)
-    plans: list[tuple[str | None, str | None]] = [(resolved_mode, output_format)]
+    resolved_fmt = _resolve_review_output_format(settings, output_format)
+    fmt = _resolve_review_output_format(settings, output_format)
+    plans: list[tuple[str | None, str | None]] = [(resolved_mode, fmt)]
     if resolved_mode != "agent":
-        plans.append(("agent", output_format))
+        plans.append(("agent", fmt))
     if resolved_fmt != "json":
         plans.append(("agent", "json"))
     # Deduplicate while preserving order
@@ -430,10 +468,13 @@ def _execute_review(
 
     last_result: _CliRunResult | None = None
     last_prompt = ""
-    attempt_plans = _review_attempt_plans(settings, mode, output_format)
+    skill_mode = bool(context.use_review_skill)
+    attempt_plans = _review_attempt_plans(
+        settings, mode, output_format, use_review_skill=skill_mode
+    )
 
-    for attempt_model in _model_attempts(settings, model):
-        review_workspace = workspace if settings.cursor_cli_review_use_workspace else None
+    for attempt_model in _model_attempts(settings, model, use_review_skill=skill_mode):
+        review_workspace = _resolve_workspace(settings, workspace)
         for attempt_mode, attempt_fmt in attempt_plans:
             base_cmd = _build_command_base(
                 cli_bin=cli_bin,
@@ -443,7 +484,7 @@ def _execute_review(
                 output_format=attempt_fmt,
                 mode=attempt_mode,
             )
-            fmt = _resolve_output_format(settings, attempt_fmt)
+            fmt = _resolve_review_output_format(settings, attempt_fmt)
             prompt = _truncate_diff_for_argv(context, base_cmd=base_cmd, output_format=fmt)
             last_prompt = prompt
             if not _prompt_fits_argv(base_cmd, prompt):
@@ -482,6 +523,21 @@ def _execute_review(
                 break
 
     assert last_result is not None
+
+    stdout = last_result.stdout or ""
+    if is_empty_shell_stdout(stdout) or not stdout.strip():
+        fallback = scan_diff_for_review(context.git_diff)
+        if fallback.get("findings") or fallback.get("suggestions"):
+            fallback_note = "[fallback] deterministic diff rule scan (Cursor CLI empty JSON)\n"
+            return CursorCliResult(
+                returncode=0,
+                stdout=json.dumps(fallback, ensure_ascii=False),
+                stderr=f"{fallback_note}{last_result.stderr or ''}".strip(),
+                command=last_result.command,
+                prompt_chars=len(last_prompt),
+                timed_out=last_result.timed_out,
+            )
+
     return CursorCliResult(
         returncode=last_result.returncode,
         stdout=last_result.stdout,

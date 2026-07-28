@@ -214,6 +214,11 @@ class MergeRequestReviewResponse(BaseModel):
     merge_request_url: str
     review: dict
     review_prompt: str = ""
+    cli_stdout: str = ""
+    cli_stderr: str = ""
+    cli_command: list[str] = Field(default_factory=list)
+    cli_returncode: int | None = None
+    cli_backend: str | None = None
     prompt_tokens: int = 0
     message: str
     hitl_checkpoint_id: str | None = None
@@ -240,6 +245,11 @@ class MergeRequestLastReviewResponse(BaseModel):
     merge_request_url: str = ""
     review: dict
     review_prompt: str = ""
+    cli_stdout: str = ""
+    cli_stderr: str = ""
+    cli_command: list[str] = Field(default_factory=list)
+    cli_returncode: int | None = None
+    cli_backend: str | None = None
     prompt_tokens: int = 0
     note_posted: bool | None = None
     created_at: str = ""

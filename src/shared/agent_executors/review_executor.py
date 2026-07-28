@@ -6,6 +6,12 @@ from core.config import get_settings
 from core.tracing import trace_config
 from shared.agent_executors.cursor_client import CursorBridgeError, cursor_bridge_review
 from shared.cursor_cli.context_builder import build_review_context
+from shared.cursor_cli.review_workspace import (
+    ReviewWorkspaceError,
+    ReviewWorkspaceSession,
+    review_workspace_enabled,
+)
+from shared.review.progress import ReviewProgressReporter
 from shared.agent_executors.models import AgentExecutorType
 from shared.agent_executors.settings_store import get_agent_executor_settings
 from shared.llm.factory import create_code_review_llm_for_provider
@@ -171,6 +177,7 @@ async def execute_review(
     mr_changes: list[dict] | None,
     repo: AgentRunRepository,
     knowledge_package: ReviewKnowledgePackage | None = None,
+    progress: ReviewProgressReporter | None = None,
 ) -> dict[str, Any]:
     settings_store = get_agent_executor_settings()
     executor = settings_store.sentinel_executor
@@ -202,6 +209,8 @@ async def execute_review(
 
     if executor == AgentExecutorType.CURSOR:
         settings = get_settings()
+        if progress:
+            await progress.log("build_context", "Building ReviewContext + skill prompt")
         review_context = build_review_context(
             mr=mr,
             task_key=task_key,
@@ -211,28 +220,99 @@ async def execute_review(
             knowledge_package=knowledge_package,
             language=settings.cursor_review_language,
         )
+        skill_prompt = prompt
+
         try:
-            result = await cursor_bridge_review(
-                run_id=run_id,
-                task_key=task_key,
-                branch_name=branch_name,
-                context=review_context.model_dump(),
-            )
-            review_data = result.get("review") or result
-            if isinstance(review_data, str):
-                review = _parse_review_json(review_data)
+            if review_workspace_enabled():
+                if progress:
+                    await progress.log(
+                        "worktree",
+                        f"Creating git worktree for branch {branch_name}",
+                    )
+                try:
+                    async with ReviewWorkspaceSession(
+                        repo_path=settings.cursor_repo_path,
+                        branch_name=branch_name,
+                        mr_iid=mr.iid,
+                        run_id=run_id,
+                        progress=progress,
+                    ) as workspace:
+                        if progress:
+                            await progress.log(
+                                "skill",
+                                f"Skill materialized at {workspace.skill_path}",
+                                skill_path=str(workspace.skill_path),
+                            )
+                        skill_context = review_context.model_copy(
+                            update={"use_review_skill": True}
+                        )
+                        from shared.cursor_cli.prompt_builder import (
+                            build_review_prompt as build_cli_review_prompt,
+                        )
+
+                        skill_prompt = build_cli_review_prompt(
+                            skill_context,
+                            output_format=settings.cursor_cli_review_output_format,
+                        )
+                        if progress:
+                            await progress.log(
+                                "prompt",
+                                f"Prompt ready ({len(skill_prompt)} chars, JSON + sentinel-review skill)",
+                                workspace=str(workspace.path),
+                            )
+                        await repo.log_event_by_type(
+                            run_id,
+                            AgentName.SENTINEL,
+                            "review_workspace_created",
+                            f"Worktree at {workspace.path} with skill {workspace.skill_path.name}",
+                            {
+                                "workspace": str(workspace.path),
+                                "skill_path": str(workspace.skill_path),
+                                "branch": branch_name,
+                            },
+                        )
+                        if progress:
+                            await progress.log(
+                                "cursor_bridge",
+                                "Calling Cursor Bridge → agent subprocess (--workspace, --mode agent)",
+                                workspace=str(workspace.path),
+                            )
+                        result = await cursor_bridge_review(
+                            run_id=run_id,
+                            task_key=task_key,
+                            branch_name=branch_name,
+                            context=skill_context.model_dump(),
+                            workspace=str(workspace.path),
+                        )
+                        if progress:
+                            backend = result.get("backend") or "cursor-cli"
+                            await progress.log(
+                                "cursor_cli",
+                                f"Cursor CLI finished (backend: {backend})",
+                            )
+                except ReviewWorkspaceError as exc:
+                    await repo.log_event_by_type(
+                        run_id,
+                        AgentName.SENTINEL,
+                        "review_workspace_failed",
+                        str(exc),
+                    )
+                    raise CursorBridgeError(
+                        f"Review workspace setup failed: {exc}. "
+                        f"Check CURSOR_REPO_PATH and that origin/{branch_name} exists."
+                    ) from exc
             else:
-                review = _coerce_review_result(
-                    review_data if isinstance(review_data, dict) else {},
-                    fallback_summary=str(review_data)[:500],
+                if progress:
+                    await progress.log(
+                        "cursor_bridge",
+                        "Calling Cursor Bridge (inline prompt, no worktree)",
+                    )
+                result = await cursor_bridge_review(
+                    run_id=run_id,
+                    task_key=task_key,
+                    branch_name=branch_name,
+                    context=review_context.model_dump(),
                 )
-            await repo.log_event_by_type(
-                run_id,
-                AgentName.SENTINEL,
-                "cursor_review_completed",
-                f"Cursor review: {'approved' if review.approved else 'changes requested'}",
-            )
-            return {"review": review, "executor": executor.value, "prompt": prompt}
         except CursorBridgeError as exc:
             await repo.log_event_by_type(
                 run_id,
@@ -241,6 +321,49 @@ async def execute_review(
                 str(exc),
             )
             raise
+
+        if progress:
+            await progress.log("parse", "Parsing review JSON / text response")
+
+        cli_stdout = str(result.get("cli_stdout") or result.get("raw_content") or "")
+        cli_stderr = str(result.get("cli_stderr") or "")
+        cli_meta = {
+            "backend": result.get("backend"),
+            "returncode": result.get("cli_returncode"),
+            "timed_out": result.get("cli_timed_out"),
+            "command": result.get("cli_command"),
+        }
+        if progress:
+            if cli_stdout.strip():
+                await progress.cli_output("stdout", cli_stdout, **cli_meta)
+            if cli_stderr.strip():
+                await progress.cli_output("stderr", cli_stderr, **cli_meta)
+
+        review_data = result.get("review") or result
+        if isinstance(review_data, str):
+            review = _parse_review_json(review_data)
+        else:
+            review = _coerce_review_result(
+                review_data if isinstance(review_data, dict) else {},
+                fallback_summary=str(review_data)[:500],
+            )
+        await repo.log_event_by_type(
+            run_id,
+            AgentName.SENTINEL,
+            "cursor_review_completed",
+            f"Cursor review: {'approved' if review.approved else 'changes requested'}",
+        )
+        return {
+            "review": review,
+            "executor": executor.value,
+            "prompt": skill_prompt,
+            "cli_stdout": cli_stdout,
+            "cli_stderr": cli_stderr,
+            "cli_command": result.get("cli_command"),
+            "cli_returncode": result.get("cli_returncode"),
+            "cli_timed_out": result.get("cli_timed_out"),
+            "backend": result.get("backend"),
+        }
 
     llm = create_code_review_llm_for_provider(executor.value)
     response = await llm.ainvoke(

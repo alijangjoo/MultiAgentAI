@@ -1,6 +1,6 @@
 """Tests for Cursor CLI response parsing."""
 
-from shared.cursor_cli.response_parser import parse_review_response
+from shared.cursor_cli.response_parser import is_empty_shell_stdout, parse_review_response
 
 
 def test_parse_json_review():
@@ -35,6 +35,15 @@ def test_parse_invalid_json_does_not_crash():
     data = parse_review_response(content)
     assert "approved" in data
     assert isinstance(data["findings"], list)
+
+
+def test_detect_empty_shell_json():
+    content = '{"approved": true, "summary": "", "findings": [], "suggestions": []}'
+    assert is_empty_shell_stdout(content) is True
+    data = parse_review_response(content)
+    assert data["approved"] is False
+    assert "empty json" in data["summary"].lower() or "did not run" in data["summary"].lower()
+    assert data["findings"]
 
 
 def test_detect_ask_mode_placeholder():
