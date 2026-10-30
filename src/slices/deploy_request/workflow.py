@@ -93,8 +93,40 @@ async def trigger_stg_pipeline_node(
 ) -> dict:
     settings = get_settings()
     ref = state.get("target_branch") or settings.gitlab_mr_target_stage
-    variables = [{"key": "ENV", "value": "stg"}]
+    source_branch = state.get("source_branch") or ""
     gitlab = integrations.gitlab
+
+    qa_verdict = "SKIPPED"
+    if settings.qa_gate_enabled and source_branch:
+        from api.services.qa_service import QaService
+
+        gate = await QaService().check_branch_gate(source_branch)
+        qa_verdict = gate.get("verdict") or "NONE"
+        if not gate.get("passed"):
+            msg = gate.get("message") or "QA quality gate failed"
+            await deploy_repo.update_fields(
+                state["request_id"],
+                status=DeployRequestStatus.FAILED,
+                error_message=msg,
+            )
+            await run_repo.log_event_by_type(
+                state["run_id"],
+                AgentName.DEPLOY,
+                "qa_gate_failed",
+                msg,
+                {"branch": source_branch, "gate": gate},
+            )
+            return {
+                "pipeline_id": None,
+                "pipeline_url": None,
+                "status": DeployRequestStatus.FAILED.value,
+                "error": msg,
+            }
+
+    variables = [
+        {"key": "ENV", "value": "stg"},
+        {"key": "QA_VERDICT", "value": qa_verdict},
+    ]
 
     try:
         if not hasattr(gitlab, "create_pipeline"):

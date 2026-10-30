@@ -53,6 +53,14 @@ class JiraClientProtocol(ABC):
         """Return list of {filename, content, mime_type} for task attachments."""
         pass
 
+    @abstractmethod
+    async def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+        pass
+
+    @abstractmethod
+    async def add_attachment(self, issue_key: str, filepath: str, filename: str | None = None) -> dict[str, Any]:
+        pass
+
 
 class ConfluenceClientProtocol(ABC):
     @abstractmethod

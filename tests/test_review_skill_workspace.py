@@ -1,8 +1,19 @@
 from pathlib import Path
 
+from core.config import Settings
 from shared.cursor_cli.models import ReviewContext
 from shared.cursor_cli.prompt_builder import build_review_prompt, build_skill_review_prompt
 from shared.cursor_cli.review_workspace import materialize_review_skill
+from shared.cursor_cli.runner import _review_attempt_plans
+
+
+def test_skill_mode_prefers_configured_agent_not_ask_first() -> None:
+    settings = Settings(cursor_cli_review_mode="agent")
+    plans = _review_attempt_plans(
+        settings, mode=None, output_format="json", use_review_skill=True
+    )
+    assert plans[0] == ("agent", "json")
+    assert ("ask", "json") not in plans
 
 
 def test_build_skill_review_prompt_requests_json_only() -> None:

@@ -9,6 +9,10 @@ class ReviewContext(BaseModel):
     title: str | None = Field(default=None, description="PR / change title")
     description: str | None = Field(default=None, description="PR / change description")
     git_diff: str = Field(..., min_length=1, description="Unified git diff to review")
+    git_diff_raw: str | None = Field(
+        default=None,
+        description="Uncompressed diff for deterministic scanners (RR-012/013/014); defaults to git_diff",
+    )
     specs: str | None = Field(default=None, description="Product / technical specs")
     review_rules: str | None = Field(default=None, description="Review rubric / severity rules")
     extra_context: dict[str, Any] | None = Field(

@@ -51,6 +51,18 @@ def test_should_fallback_on_unavailable():
     assert should_fallback_from_cursor_cli("", "Error: [unavailable]") is True
 
 
+def test_should_fallback_on_empty_review_json():
+    from shared.cursor_cli.fallback import should_fallback_empty_review_stdout
+
+    assert should_fallback_empty_review_stdout('{"approved": true, "findings": []}') is True
+    assert (
+        should_fallback_empty_review_stdout(
+            '{"approved": false, "summary": "Needs work", "findings": ["[ERROR] x"]}'
+        )
+        is False
+    )
+
+
 def test_should_not_fallback_on_permission_denied():
     from shared.cursor_cli.fallback import (
         should_fallback_from_cursor_cli,

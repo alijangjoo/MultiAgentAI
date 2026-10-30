@@ -19,10 +19,14 @@ from slices.deploy_request.pipeline_context import (
     all_required_jobs_succeeded,
     commit_changes_url,
     context_from_mr,
+    deploy_target_branch_for_ref,
     extract_version_from_jobs,
     find_related_merged_mr,
+    is_deploy_pipeline_ref,
     is_stg_version_tag,
+    list_deploy_pipelines,
     normalize_version_tag,
+    pipeline_fully_succeeded,
 )
 from slices.deploy_request.repository import DeployRequestRepository
 from slices.deploy_request.workflow import (
@@ -66,11 +70,19 @@ class DeployRequestOrchestrator:
         Register a successful Stage pipeline as PIPELINE_READY.
         If IsAutomaticSendMessage is on → generate + publish immediately.
         """
-        stage = self._stage_branch()
-        if ref and ref != stage and not is_stg_version_tag(ref) and not normalize_version_tag(ref):
+        cfg = get_deploy_branch_settings()
+        stage = cfg.stage_target_branch
+        production = cfg.production_target_branch
+        if ref and not is_deploy_pipeline_ref(
+            ref, stage_branch=stage, production_branch=production
+        ) and not normalize_version_tag(ref):
             raise ValueError(
-                f"Pipeline ref {ref!r} is neither stage ({stage}) nor a Stage tag (e.g. v2.307.0-stg)"
+                f"Pipeline ref {ref!r} is not a deploy ref "
+                f"(Stage tag, {stage!r}, or {production!r})"
             )
+        mr_target = deploy_target_branch_for_ref(
+            ref, stage_branch=stage, production_branch=production
+        )
 
         existing = await self._deploy_repo.get_by_pipeline_id(pipeline_id)
         if existing and existing.status != DeployRequestStatus.FAILED:
@@ -85,11 +97,24 @@ class DeployRequestOrchestrator:
             except Exception:
                 jobs = []
         jobs = jobs or []
-        if not jobs or not all_required_jobs_succeeded(jobs):
+        pipe_status: str | None = None
+        if hasattr(gitlab, "get_pipeline"):
+            try:
+                pipe_detail = await gitlab.get_pipeline(pipeline_id)
+                pipe_status = pipe_detail.get("status")
+            except Exception:
+                pipe_status = None
+        if not jobs and (pipe_status or "").lower() != "success":
             raise ValueError(
                 f"Pipeline {pipeline_id} is not fully successful yet "
                 "(all required jobs must finish with success)"
             )
+        if jobs and not all_required_jobs_succeeded(jobs, pipeline_status=pipe_status):
+            if (pipe_status or "").lower() != "success":
+                raise ValueError(
+                    f"Pipeline {pipeline_id} is not fully successful yet "
+                    "(all required jobs must finish with success)"
+                )
 
         # Tag pipeline ref is the version (GitLab shows "For v2.307.0-stg")
         resolved_version = (
@@ -106,7 +131,7 @@ class DeployRequestOrchestrator:
         }
         if mr_iid is None:
             mr = await find_related_merged_mr(
-                gitlab, stage_branch=stage, sha=sha
+                gitlab, target_branch=mr_target, sha=sha
             )
             mr_ctx = context_from_mr(mr)
             if mr and not sha:
@@ -145,7 +170,7 @@ class DeployRequestOrchestrator:
             mr_iid=mr_ctx.get("mr_iid"),
             mr_url=mr_ctx.get("mr_url"),
             source_branch=mr_ctx.get("source_branch"),
-            target_branch=stage,
+            target_branch=mr_target,
             pipeline_id=pipeline_id,
             pipeline_url=pipeline_url,
             version=resolved_version,
@@ -221,11 +246,13 @@ class DeployRequestOrchestrator:
                         f"Pipeline {req.pipeline_id} status is {pipe.get('status')!r}, not success"
                     )
                 jobs = await self._integrations.gitlab.list_pipeline_jobs(int(req.pipeline_id))
-                if not all_required_jobs_succeeded(jobs):
-                    raise ValueError(
-                        f"Pipeline {req.pipeline_id} has unfinished or failed jobs — "
-                        "message is only generated when every stage completed successfully"
-                    )
+                pipe_st = pipe.get("status") if pipe else None
+                if not all_required_jobs_succeeded(jobs, pipeline_status=pipe_st):
+                    if (pipe_st or "").lower() != "success":
+                        raise ValueError(
+                            f"Pipeline {req.pipeline_id} has unfinished or failed jobs — "
+                            "message is only generated when every stage completed successfully"
+                        )
             except ValueError:
                 raise
             except Exception as exc:
@@ -712,6 +739,116 @@ class DeployRequestOrchestrator:
             "status": req.status.value,
             "mr": mr,
         }
+
+    async def list_stage_pipelines_for_dashboard(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Deploy pipelines (Stage tags, stage branch, main) with branch/Jira preview."""
+        cfg = get_deploy_branch_settings()
+        stage = cfg.stage_target_branch
+        production = cfg.production_target_branch
+        gitlab = self._integrations.gitlab
+        limit = max(1, min(limit, 100))
+        try:
+            pipes = await list_deploy_pipelines(
+                gitlab,
+                limit,
+                stage_branch=stage,
+                production_branch=production,
+                status=None,
+            )
+        except Exception as exc:
+            raise ValueError(f"Could not list deploy pipelines: {exc}") from exc
+
+        out: list[dict[str, Any]] = []
+        for pipe in pipes[:limit]:
+            pid = pipe.get("id")
+            if pid is None:
+                continue
+            pid_i = int(pid)
+            ref = pipe.get("ref") or ""
+            sha = pipe.get("sha")
+            existing = await self._deploy_repo.get_by_pipeline_id(pid_i)
+            mr_target = deploy_target_branch_for_ref(
+                ref, stage_branch=stage, production_branch=production
+            )
+
+            mr = await find_related_merged_mr(gitlab, target_branch=mr_target, sha=sha)
+            mr_ctx = context_from_mr(mr)
+            jobs_ok = False
+            if (pipe.get("status") or "").lower() == "success":
+                jobs_ok, _, _ = await pipeline_fully_succeeded(gitlab, pid_i)
+
+            out.append(
+                {
+                    "pipeline_id": pid_i,
+                    "tag": ref,
+                    "version": normalize_version_tag(ref),
+                    "status": pipe.get("status") or "unknown",
+                    "sha": sha,
+                    "web_url": pipe.get("web_url"),
+                    "created_at": pipe.get("created_at"),
+                    "source_branch": mr_ctx.get("source_branch"),
+                    "jira_key": mr_ctx.get("jira_key"),
+                    "mr_iid": mr_ctx.get("mr_iid"),
+                    "mr_url": mr_ctx.get("mr_url"),
+                    "deploy_request_id": existing.id if existing else None,
+                    "deploy_status": existing.status.value if existing else None,
+                    "jobs_complete": jobs_ok,
+                    "selectable": jobs_ok
+                    and existing.status != DeployRequestStatus.PUBLISHED
+                    if existing
+                    else jobs_ok,
+                }
+            )
+        return out
+
+    async def open_stage_pipeline(self, pipeline_id: int) -> DeployRequest:
+        """Register or return Deploy Request for a successful deploy pipeline."""
+        gitlab = self._integrations.gitlab
+        existing = await self._deploy_repo.get_by_pipeline_id(pipeline_id)
+        if existing:
+            return existing
+
+        if not hasattr(gitlab, "get_pipeline"):
+            raise ValueError("GitLab client does not support get_pipeline")
+
+        cfg = get_deploy_branch_settings()
+        stage = cfg.stage_target_branch
+        production = cfg.production_target_branch
+
+        try:
+            pipe = await gitlab.get_pipeline(pipeline_id)
+        except Exception as exc:
+            raise ValueError(f"Pipeline {pipeline_id} not found: {exc}") from exc
+
+        ref = pipe.get("ref")
+        if not is_deploy_pipeline_ref(
+            ref, stage_branch=stage, production_branch=production
+        ) and not normalize_version_tag(ref):
+            raise ValueError(
+                f"Pipeline {pipeline_id} ref {ref!r} is not allowed "
+                f"(use Stage tag, {stage!r}, or {production!r})"
+            )
+        if (pipe.get("status") or "").lower() != "success":
+            raise ValueError(
+                f"Pipeline {pipeline_id} status is {pipe.get('status')!r}; "
+                "only successful pipelines can prepare a Deploy Request"
+            )
+
+        ok, jobs, detail = await pipeline_fully_succeeded(gitlab, pipeline_id)
+        if not ok:
+            raise ValueError(
+                f"Pipeline {pipeline_id} has unfinished or failed jobs — "
+                "wait until every stage completes successfully"
+            )
+
+        merged = detail or pipe
+        return await self.register_stage_pipeline(
+            pipeline_id=pipeline_id,
+            pipeline_url=merged.get("web_url") or pipe.get("web_url"),
+            ref=ref,
+            sha=merged.get("sha") or pipe.get("sha"),
+            jobs=jobs,
+        )
 
     async def list_open_mrs_by_environment(self, limit: int = 30) -> dict[str, Any]:
         """Open MRs grouped by Dev / Stage / Production target branches."""

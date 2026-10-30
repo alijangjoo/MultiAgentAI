@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from core.config import get_settings
 from core.tracing import GenerationTimer, flush_tracing, init_tracing, record_generation, tracing_status
 from shared.cursor_cli.fallback import (
+    should_fallback_empty_review_stdout,
     should_fallback_from_cursor_cli,
     summarize_cursor_cli_failure,
 )
@@ -57,6 +58,18 @@ class ReviewRequest(BaseModel):
     model: str | None = None
     workspace: str | None = None
     output_format: str | None = None
+    mode: str | None = None
+    timeout_seconds: int | None = Field(default=None, ge=30, le=1800)
+
+
+class QaRequest(BaseModel):
+    run_id: str
+    task_key: str
+    branch_name: str
+    repo_path: str = ""
+    context: dict[str, Any]
+    model: str | None = None
+    output_format: str | None = "json"
     mode: str | None = None
     timeout_seconds: int | None = Field(default=None, ge=30, le=1800)
 
@@ -411,7 +424,11 @@ def _run_cursor_cli_review(
         workspace=workspace,
         output_format=request.output_format or settings.cursor_cli_output_format,
         mode=request.mode or settings.cursor_cli_review_mode or settings.cursor_cli_mode,
-        timeout_seconds=request.timeout_seconds or settings.cursor_cli_timeout_seconds,
+        timeout_seconds=(
+            request.timeout_seconds
+            or settings.cursor_cli_review_timeout_seconds
+            or settings.cursor_cli_timeout_seconds
+        ),
     )
     prompt = build_review_prompt(
         request.context,
@@ -424,10 +441,14 @@ def _run_cursor_cli_review(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     failure_text = f"{result.stderr}\n{result.stdout}".strip()
+    empty_review = should_fallback_empty_review_stdout(result.stdout or "")
     if (
         settings.cursor_review_fallback_9router
         and _uses_9router()
-        and should_fallback_from_cursor_cli(result.stderr, result.stdout)
+        and (
+            should_fallback_from_cursor_cli(result.stderr, result.stdout)
+            or empty_review
+        )
     ):
         try:
             content = _llm_via_9router(
@@ -620,16 +641,138 @@ async def review(request: ReviewRequest):
     )
 
     review_data = parse_review_response(content)
+    from shared.cursor_cli.diff_rule_scanner import merge_review_with_diff_scan
+
+    review_data = merge_review_with_diff_scan(
+        review_data,
+        request.context.git_diff_raw or request.context.git_diff or "",
+    )
 
     review_data["findings"] = _as_lines(review_data.get("findings"))
     review_data["suggestions"] = _as_lines(review_data.get("suggestions"))
+
+    cli_stdout_raw = (cli_result.stdout or "").strip()
+    cli_stderr_raw = (cli_result.stderr or "").strip()
+    cli_display_parts: list[str] = []
+    if cli_stdout_raw:
+        cli_display_parts.append(f"=== Cursor CLI stdout ===\n{cli_stdout_raw}")
+    if cli_stderr_raw:
+        cli_display_parts.append(f"=== Cursor CLI stderr ===\n{cli_stderr_raw}")
+    if backend == "9router-fallback":
+        cli_display_parts.append(f"=== 9Router fallback response ===\n{content.strip()}")
+    elif content.strip() and content.strip() != cli_stdout_raw:
+        cli_display_parts.append(f"=== Parsed review source ===\n{content.strip()}")
+    cli_display = "\n\n".join(cli_display_parts).strip() or content.strip()
+
     return {
         "review": review_data,
         "run_id": request.run_id,
         "model": review_model,
         "backend": backend,
         "raw_content": content[:16000],
-        "cli_stdout": (cli_result.stdout or "")[:16000],
+        "cli_stdout": (cli_display or cli_stdout_raw)[:16000],
+        "cli_stderr": (cli_result.stderr or "")[:8000],
+        "cli_command": cli_result.command,
+        "cli_returncode": cli_result.returncode,
+        "cli_timed_out": cli_result.timed_out,
+        "prompt_chars": cli_result.prompt_chars,
+    }
+
+
+def _run_cursor_cli_qa(request: QaRequest) -> tuple[str, Any, str]:
+    from shared.qa.models import QaContext
+    from shared.qa.prompt_builder import build_qa_prompt
+    from shared.qa.response_parser import parse_qa_response
+    from shared.cursor_cli.runner import CursorCliError, run_cursor_prompt
+
+    settings = get_settings()
+    context = QaContext(**request.context)
+    prompt = build_qa_prompt(context)
+    timeout = (
+        request.timeout_seconds
+        or settings.cursor_cli_review_timeout_seconds
+        or settings.cursor_cli_timeout_seconds
+    )
+
+    try:
+        result = run_cursor_prompt(
+            prompt,
+            settings=settings,
+            model=request.model,
+            output_format=request.output_format or "json",
+            mode=request.mode or settings.cursor_cli_review_mode,
+            timeout_seconds=timeout,
+        )
+    except CursorCliError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    failure_text = f"{result.stderr}\n{result.stdout}".strip()
+    if (
+        settings.cursor_review_fallback_9router
+        and _uses_9router()
+        and should_fallback_from_cursor_cli(result.stderr, result.stdout)
+    ):
+        try:
+            content = _llm_via_9router(prompt, _9router_review_model(), for_review=True)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=f"Cursor CLI QA failed and 9Router fallback failed. CLI: {failure_text[:350]}",
+            ) from exc
+        qa_data = parse_qa_response(content).model_dump()
+        return content, result, "9router-fallback", qa_data
+
+    if result.timed_out:
+        raise HTTPException(status_code=504, detail=f"Cursor CLI QA timed out after {timeout}s")
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=summarize_cursor_cli_failure(result.stderr, result.stdout),
+        )
+
+    content = (result.stdout or "").strip()
+    qa_data = parse_qa_response(content).model_dump()
+    return content, result, "cursor-cli", qa_data
+
+
+@app.post("/qa")
+async def qa_analyze(request: QaRequest):
+    with GenerationTimer() as timer:
+        content, cli_result, backend, qa_data = await asyncio.to_thread(_run_cursor_cli_qa, request)
+
+    from shared.qa.prompt_builder import build_qa_prompt
+    from shared.qa.models import QaContext
+
+    prompt = build_qa_prompt(QaContext(**request.context))
+    qa_model = _9router_review_model() if backend == "9router-fallback" else _review_model(request.model)
+    record_generation(
+        run_id=request.run_id,
+        name="cursor_qa",
+        model=qa_model,
+        prompt=prompt,
+        output=content,
+        latency_ms=timer.elapsed_ms,
+        tags=["cursor_bridge", "qa", backend.replace("-", "_")],
+    )
+
+    cli_stdout_raw = (cli_result.stdout or "").strip()
+    cli_stderr_raw = (cli_result.stderr or "").strip()
+    cli_display_parts: list[str] = []
+    if cli_stdout_raw:
+        cli_display_parts.append(f"=== Cursor CLI stdout ===\n{cli_stdout_raw}")
+    if cli_stderr_raw:
+        cli_display_parts.append(f"=== Cursor CLI stderr ===\n{cli_stderr_raw}")
+    if backend == "9router-fallback":
+        cli_display_parts.append(f"=== 9Router fallback response ===\n{content.strip()}")
+    cli_display = "\n\n".join(cli_display_parts).strip() or content.strip()
+
+    return {
+        "qa": qa_data,
+        "run_id": request.run_id,
+        "model": qa_model,
+        "backend": backend,
+        "raw_content": content[:16000],
+        "cli_stdout": (cli_display or cli_stdout_raw)[:16000],
         "cli_stderr": (cli_result.stderr or "")[:8000],
         "cli_command": cli_result.command,
         "cli_returncode": cli_result.returncode,

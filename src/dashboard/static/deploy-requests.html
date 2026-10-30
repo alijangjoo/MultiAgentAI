@@ -65,13 +65,13 @@
   <div id="app-header"></div>
   <main>
     <div class="workspace">
-      <!-- 3 col: Ready / In progress (newest pipeline first) -->
+      <!-- 3 col: Stage tag pipelines (newest first) -->
       <div class="panel">
         <div class="panel-header">
-          <span>Ready / In progress</span>
+          <span>Pipelines (Stage tag / main)</span>
           <div class="toolbar">
             <button class="secondary" type="button" onclick="syncFromGitlab()">Sync</button>
-            <button class="secondary" type="button" onclick="loadAll()">Refresh</button>
+            <button class="secondary" type="button" onclick="refreshPipelines()">Refresh</button>
           </div>
         </div>
         <div class="panel-body padded" id="ready-list"><div class="empty-state">Loading...</div></div>
@@ -144,12 +144,14 @@
     Dashboard.mountHeader(
       'app-header',
       'Deploy Request',
-      'Successful Stage pipeline (poll 30s) → Generate Message → Mattermost',
+      'Stage tag pipelines → select → Generate Message → Mattermost',
       'deploy-requests'
     );
     const API = Dashboard.API;
     let selected = null;
+    let selectedPipelineId = null;
     let allItems = [];
+    let stagePipelines = [];
     let openMrs = { dev: [], stage: [], production: [], branches: {} };
     let mrTab = 'stage';
 
@@ -189,20 +191,32 @@
       return r && r.status === 'published';
     }
 
-    function renderReadyList(ready) {
+    function pipelineStatusLabel(p) {
+      if (p.deploy_status === 'published') return 'Published';
+      if (p.jobs_complete && p.status === 'success') return 'Ready';
+      return p.status || 'unknown';
+    }
+
+    function renderStagePipelineList() {
       const el = document.getElementById('ready-list');
-      const readySorted = [...ready].sort(byNewestPipeline);
-      if (!readySorted.length) {
-        el.innerHTML = '<div class="empty-state">No fully successful Stage pipelines outside History — try Sync</div>';
+      if (!stagePipelines.length) {
+        el.innerHTML = '<div class="empty-state">No deploy pipelines — check GitLab or Sync</div>';
         return;
       }
-      el.innerHTML = readySorted.map(r => `
-        <div class="deploy-item ${selected && selected.id === r.id ? 'active' : ''}" onclick="openDetail('${r.id}')">
-          <strong>#${r.pipeline_id || '-'}</strong>
-          <span style="margin-left:0.35rem">${Dashboard.escapeHtml(r.version || '')}</span>
-          <div class="meta">${Dashboard.escapeHtml(r.jira_key || '-')} · MR !${r.mr_iid || '-'}</div>
-        </div>
-      `).join('');
+      el.innerHTML = stagePipelines.map(p => {
+        const active = selectedPipelineId === p.pipeline_id
+          || (selected && selected.pipeline_id === p.pipeline_id);
+        const tag = Dashboard.escapeHtml(p.tag || p.version || '-');
+        const branch = Dashboard.escapeHtml(p.source_branch || '-');
+        const jira = Dashboard.escapeHtml(p.jira_key || '-');
+        const st = pipelineStatusLabel(p);
+        return `
+        <div class="deploy-item ${active ? 'active' : ''}" onclick="selectStagePipeline(${p.pipeline_id})">
+          <strong>#${p.pipeline_id}</strong>
+          <span style="margin-left:0.35rem">${tag}</span>
+          <div class="meta">${st} · ${branch} · Jira ${jira}${p.mr_iid ? ` · MR !${p.mr_iid}` : ''}</div>
+        </div>`;
+      }).join('');
     }
 
     function renderPublished(items) {
@@ -288,7 +302,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Prepare failed');
         alert(data.message || JSON.stringify(data));
-        await Promise.all([loadOpenMrs(), loadAll()]);
+        await Promise.all([loadOpenMrs(), loadAll(), loadStagePipelines()]);
         if (data.deploy_request_id) openDetail(data.deploy_request_id);
       } catch (err) {
         alert(err.message || String(err));
@@ -301,20 +315,28 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Sync failed');
         alert(data.message || JSON.stringify(data));
-        await Promise.all([loadAll(), loadOpenMrs()]);
+        await Promise.all([loadAll(), loadOpenMrs(), loadStagePipelines()]);
       } catch (err) {
         alert(err.message || String(err));
       }
     }
 
-    const READY_LIST_LIMIT = 10;
-
     function paintLists() {
-      // Newest successful Stage pipelines first; cap Ready at 10; History is Published only
-      const ready = allItems.filter(isReadyItem).sort(byNewestPipeline).slice(0, READY_LIST_LIMIT);
+      renderStagePipelineList();
       const published = allItems.filter(isHistoryItem).sort(byNewestPipeline);
-      renderReadyList(ready);
       renderPublished(published);
+    }
+
+    async function loadStagePipelines() {
+      const res = await fetch(`${API}/api/v1/deploy-requests/stage-pipelines?limit=30`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to load Stage pipelines');
+      stagePipelines = data;
+      paintLists();
+    }
+
+    async function refreshPipelines() {
+      await Promise.all([loadStagePipelines(), loadAll()]);
     }
 
     async function loadAll() {
@@ -329,9 +351,48 @@
       }
     }
 
+    async function selectStagePipeline(pipelineId) {
+      selectedPipelineId = pipelineId;
+      const row = stagePipelines.find(p => p.pipeline_id === pipelineId);
+      document.getElementById('detail-error').textContent = '';
+      paintLists();
+
+      if (row && row.deploy_request_id) {
+        await loadAll();
+        openDetail(row.deploy_request_id);
+        return;
+      }
+
+      if (row && !row.selectable && !row.deploy_request_id) {
+        document.getElementById('detail-empty').style.display = 'none';
+        document.getElementById('detail-body').classList.add('visible');
+        document.getElementById('btn-close-detail').style.display = '';
+        document.getElementById('detail-title').textContent = `Pipeline #${pipelineId} · ${row.tag || ''}`;
+        document.getElementById('detail-meta').innerHTML =
+          `Tag: ${Dashboard.escapeHtml(row.tag || '-')} · Branch: ${Dashboard.escapeHtml(row.source_branch || '-')} · ` +
+          `Jira: ${Dashboard.escapeHtml(row.jira_key || '-')}`;
+        document.getElementById('detail-error').textContent =
+          `Pipeline is not ready (status=${row.status}, all jobs complete=${row.jobs_complete}).`;
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API}/api/v1/deploy-requests/from-pipeline/${pipelineId}`, {
+          method: 'POST',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not open pipeline');
+        await Promise.all([loadAll(), loadStagePipelines()]);
+        openDetail(data.id);
+      } catch (err) {
+        document.getElementById('detail-error').textContent = err.message || String(err);
+      }
+    }
+
     function openDetail(id) {
       selected = allItems.find(r => r.id === id);
       if (!selected) return;
+      if (selected.pipeline_id) selectedPipelineId = selected.pipeline_id;
 
       document.getElementById('detail-empty').style.display = 'none';
       document.getElementById('detail-body').classList.add('visible');
@@ -340,7 +401,8 @@
       document.getElementById('detail-title').textContent =
         `Deploy Request · ${selected.jira_key || selected.version || ('#' + (selected.pipeline_id || selected.id.slice(0,8)))}`;
       document.getElementById('detail-meta').innerHTML =
-        `Pipeline: <strong>#${selected.pipeline_id || '-'}</strong> · Version: ${Dashboard.escapeHtml(selected.version || '-')}` +
+        `Pipeline: <strong>#${selected.pipeline_id || '-'}</strong> · Tag: ${Dashboard.escapeHtml(selected.version || '-')}` +
+        (selected.source_branch ? ` · Branch: ${Dashboard.escapeHtml(selected.source_branch)}` : '') +
         (selected.pipeline_url ? ` · <a href="${Dashboard.escapeHtml(selected.pipeline_url)}" target="_blank" rel="noopener">Pipeline ↗</a>` : '') +
         (selected.mr_url ? ` · <a href="${Dashboard.escapeHtml(selected.mr_url)}" target="_blank" rel="noopener">MR ↗</a>` : '');
       document.getElementById('fld-jira').value = selected.jira_key || '';
@@ -367,6 +429,7 @@
 
     function closeDetail() {
       selected = null;
+      selectedPipelineId = null;
       document.getElementById('detail-empty').style.display = '';
       document.getElementById('detail-body').classList.remove('visible');
       document.getElementById('btn-close-detail').style.display = 'none';
@@ -493,13 +556,14 @@
       await loadAll();
     }
 
-    Promise.all([loadAll(), loadOpenMrs()]).catch(err => {
+    Promise.all([loadAll(), loadOpenMrs(), loadStagePipelines()]).catch(err => {
       document.getElementById('ready-list').innerHTML =
         `<div class="empty-state">${Dashboard.escapeHtml(err.message)}</div>`;
     });
     Dashboard.connectWebSocket(() => {
       loadAll().catch(() => {});
       loadOpenMrs().catch(() => {});
+      loadStagePipelines().catch(() => {});
     });
   </script>
 </body>

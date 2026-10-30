@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -51,6 +51,27 @@ class HITLCheckpointRecord(Base):
     resolved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RtkSavingsRecord(Base):
+    __tablename__ = "rtk_savings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    workflow_type: Mapped[str] = mapped_column(String(50), default="mr_code_review", index=True)
+    source: Mapped[str] = mapped_column(String(80), index=True)
+    method: Mapped[str] = mapped_column(String(30), index=True)
+    mr_iid: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    task_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    raw_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    compressed_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_saved: Mapped[int] = mapped_column(Integer, default=0)
+    savings_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    raw_chars: Mapped[int] = mapped_column(Integer, default=0)
+    compressed_chars: Mapped[int] = mapped_column(Integer, default=0)
+    rtk_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class DeployRequestRecord(Base):

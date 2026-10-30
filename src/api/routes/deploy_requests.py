@@ -23,6 +23,24 @@ class TriggerStageMrRequest(BaseModel):
     mr_iid: int = Field(..., ge=1, examples=[940])
 
 
+class StagePipelineListItem(BaseModel):
+    pipeline_id: int
+    tag: str
+    version: str | None = None
+    status: str
+    sha: str | None = None
+    web_url: str | None = None
+    created_at: str | None = None
+    source_branch: str | None = None
+    jira_key: str | None = None
+    mr_iid: int | None = None
+    mr_url: str | None = None
+    deploy_request_id: str | None = None
+    deploy_status: str | None = None
+    jobs_complete: bool = False
+    selectable: bool = False
+
+
 class SendToMattermostRequest(BaseModel):
     priority: str | None = Field(default=None, examples=["P1"])
     publish_at: str | None = Field(default=None, examples=["2026-07-12 14:00"])
@@ -89,6 +107,32 @@ async def trigger_stage_mr(body: TriggerStageMrRequest):
         return await _get_orchestrator().trigger_from_stage_mr(body.mr_iid)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/stage-pipelines", response_model=list[StagePipelineListItem])
+async def list_stage_pipelines(
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    """Stage release-tag pipelines from GitLab (tag + merged branch / Jira preview)."""
+    try:
+        items = await _get_orchestrator().list_stage_pipelines_for_dashboard(limit=limit)
+        return [StagePipelineListItem(**i) for i in items]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/from-pipeline/{pipeline_id}", response_model=DeployRequestResponse)
+async def open_from_pipeline(pipeline_id: int):
+    """Select a Stage tag pipeline → register Deploy Request and resolve MR / branch."""
+    try:
+        req = await _get_orchestrator().open_stage_pipeline(pipeline_id)
+        return _to_response(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/{request_id}", response_model=DeployRequestResponse)

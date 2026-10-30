@@ -87,11 +87,20 @@ sequenceDiagram
 
 - **کد:** `build_review_context` در `src/shared/cursor_cli/context_builder.py`
 - خروجی: `ReviewContext` شامل:
-  - `git_diff` — diff فرمت‌شده MR
+  - `git_diff` — diff فرمت‌شده MR (فشرده با RTK برای prompt)
+  - `git_diff_raw` — diff خام برای scanner قطعی (RR-012/013/014)
   - `specs` — PRD / Code Specs (در صورت `CURSOR_REVIEW_INCLUDE_SPECS=true`)
   - `review_rules` — از knowledge package
   - `extra_context` — jira_ticket, branches, tech_stack
   - `use_review_skill: true` — وقتی worktree فعال است
+
+#### 6.1b فشرده‌سازی Diff (RTK) — `rtk`
+
+- **کد:** `src/shared/cursor_cli/rtk_compress.py`
+- **شرط:** `CURSOR_REVIEW_USE_RTK=true` (پیش‌فرض: **false**)
+- ترتیب: `rtk git diff` در worktree → `rtk diff` → fallback داخلی (trim context)
+- `git_diff` → prompt LLM · `git_diff_raw` → `diff_rule_scanner`
+- مستندات: [RTK_REVIEW.md](./RTK_REVIEW.md)
 
 #### 6.2 Worktree (در صورت فعال بودن) — `worktree`, `git_fetch`, `git_worktree`
 
@@ -128,18 +137,20 @@ sequenceDiagram
 #### 6.6 Cursor CLI (subprocess) — `cursor_cli`
 
 - **کد:** `src/shared/cursor_cli/runner.py` → `run_cursor_review_request`
-- دستور تقریبی:
+- دستور تقریبی (skill mode — diff-only، بدون `--workspace` وقتی `CURSOR_CLI_REVIEW_USE_WORKSPACE=false`):
   ```bash
   agent -p --trust --approve-mcps \
     --output-format json \
-    --mode agent \
-    --model {CODE_REVIEW_MODEL} \
-    --workspace {worktree_path} \
-    "{prompt}"
+    --model composer-2.5 \
+    "{prompt with git diff + review rules}"
   ```
-- Skill mode: **یک** تلاش `(agent, json)` — بدون retry طولانی model/format
-- timeout: `CURSOR_CLI_TIMEOUT_SECONDS` (پیش‌فرض 300s)
+  (`--mode agent` پیش‌فرض CLI است و معمولاً پاس داده نمی‌شود)
+- Skill mode: **اول** mode تنظیم‌شده (`CURSOR_CLI_REVIEW_MODE`, پیش‌فرض `agent`) + json؛ اگر mode غیر از agent باشد، یک بار `agent+json` به‌عنوان fallback
+- timeout review: `CURSOR_CLI_REVIEW_TIMEOUT_SECONDS` (پیش‌فرض **120s**؛ جدا از `CURSOR_CLI_TIMEOUT_SECONDS=300`)
+- SSE heartbeat هر ۱۵s در مرحله `cursor_bridge` تا UI گیر نکند
 - fallback اختیاری: 9Router اگر CLI در دسترس نباشد (`CURSOR_REVIEW_FALLBACK_9ROUTER`)
+
+**چرا روی `cursor_bridge` گیر می‌کرد؟** worktree همیشه به CLI به‌عنوان `--workspace` پاس داده می‌شد (حتی با `CURSOR_CLI_REVIEW_USE_WORKSPACE=false`) + `--mode agent` → CLI کل workspace را index می‌کرد و تا ۵ دقیقه بدون log جدید می‌ماند. fix: diff در prompt است؛ `--workspace` فقط وقتی config=true باشد. همچنین ask-first در skill mode حذف شد تا زمان دو برابر نشود.
 
 #### 6.7 Parse نتیجه — `parse`
 
@@ -205,6 +216,8 @@ CURSOR_REVIEW_GIT_TIMEOUT_SECONDS=90
 CURSOR_CLI_BIN=agent
 CURSOR_CLI_REVIEW_MODE=agent
 CURSOR_CLI_REVIEW_OUTPUT_FORMAT=json
+CURSOR_CLI_REVIEW_TIMEOUT_SECONDS=120
+CURSOR_CLI_REVIEW_USE_WORKSPACE=false
 CURSOR_CLI_TIMEOUT_SECONDS=300
 CODE_REVIEW_MODEL=composer-2.5
 ```
@@ -250,7 +263,7 @@ python run_cursor_bridge.py
 | علامت | احتمال |
 |--------|--------|
 | گیر روی `git_fetch` | branch روی origin نیست / شبکه / timeout |
-| گیر روی `cursor_bridge` | Bridge down یا CLI hang (agent mode + workspace بزرگ) |
+| گیر روی `cursor_bridge` | CLI hang — معمولاً `agent+--workspace`؛ مطمئن شوید `CURSOR_CLI_REVIEW_USE_WORKSPACE=false` و heartbeat هر ۱۵s می‌آید |
 | «Review did not run» | پاسخ placeholder از CLI — diff خالی یا mode اشتباه |
 | HTTP 400 knowledge | PRD / code_specs / review_rules در Chroma ناقص |
 | Conflict | MR قابل review نیست تا conflict حل شود |

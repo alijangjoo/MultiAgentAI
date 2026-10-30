@@ -28,6 +28,16 @@ def should_fallback_from_cursor_cli(stderr: str, stdout: str = "") -> bool:
     return any(marker in text for marker in _CURSOR_CLI_FALLBACK_MARKERS)
 
 
+def should_fallback_empty_review_stdout(stdout: str) -> bool:
+    """True when CLI exited 0 but stdout is placeholder / empty review JSON."""
+    from shared.cursor_cli.response_parser import is_empty_shell_stdout
+
+    body = (stdout or "").strip()
+    if not body:
+        return True
+    return is_empty_shell_stdout(body)
+
+
 def summarize_cursor_cli_failure(stderr: str, stdout: str = "") -> str:
     """Short user-facing hint from CLI stderr/stdout."""
     text = f"{stderr}\n{stdout}".strip()

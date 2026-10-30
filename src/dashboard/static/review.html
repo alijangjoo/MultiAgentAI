@@ -268,18 +268,15 @@
 
     function buildReviewResponseText(review, extras = {}) {
       const r = review || {};
+      const payload = {
+        approved: Boolean(r.approved),
+        summary: r.summary || '',
+        findings: Array.isArray(r.findings) ? r.findings : [],
+        suggestions: Array.isArray(r.suggestions) ? r.suggestions : [],
+      };
       const lines = [];
-      if (extras.message) lines.push(extras.message, '');
-      lines.push(
-        `Approved: ${r.approved}`,
-        r.summary || '',
-        '',
-        'Findings:',
-        ...fmtReviewItems(r.findings, '•'),
-        '',
-        'Suggestions:',
-        ...fmtReviewItems(r.suggestions, '↳'),
-      );
+      if (extras.message) lines.push(`// ${extras.message}`, '');
+      lines.push(JSON.stringify(payload, null, 2));
       return lines.join('\n');
     }
 
@@ -558,9 +555,10 @@
       if (state.cliStderr) {
         chunks.push('', '=== stderr ===', state.cliStderr.trim());
       }
-      el.textContent = chunks.join('\n').trim() || '(empty)';
+      const text = chunks.join('\n').trim();
+      el.textContent = text || 'Waiting for Cursor CLI subprocess…';
       if (meta) meta.textContent = formatCliMeta(state.cliMeta);
-      el.scrollTop = el.scrollHeight;
+      if (text) el.scrollTop = el.scrollHeight;
     }
 
     function appendCliOutputEvent(entry) {

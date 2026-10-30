@@ -27,6 +27,11 @@ class SentinelState(TypedDict):
     knowledge_package: ReviewKnowledgePackage | None
     review: CodeReviewResult | None
     review_prompt: str | None
+    cli_stdout: str | None
+    cli_stderr: str | None
+    cli_command: list[str] | None
+    cli_returncode: int | None
+    cli_backend: str | None
     error: str | None
 
 
@@ -195,6 +200,11 @@ async def run_sentinel(
             "knowledge_package": None,
             "review": None,
             "review_prompt": None,
+            "cli_stdout": None,
+            "cli_stderr": None,
+            "cli_command": None,
+            "cli_returncode": None,
+            "cli_backend": None,
             "error": None,
         },
         config=trace_config(
@@ -242,6 +252,11 @@ async def run_sentinel_review(
             "knowledge_package": knowledge_package,
             "review": None,
             "review_prompt": None,
+            "cli_stdout": None,
+            "cli_stderr": None,
+            "cli_command": None,
+            "cli_returncode": None,
+            "cli_backend": None,
             "error": None,
         },
         config=trace_config(

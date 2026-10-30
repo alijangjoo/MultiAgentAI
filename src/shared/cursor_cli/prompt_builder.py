@@ -19,8 +19,26 @@ Focus on:
 _JSON_OUTPUT_CONTRACT = """
 Return one JSON object with keys: approved (bool), summary (string),
 findings (array of strings), suggestions (array of strings).
-Each findings/suggestions item MUST be a single string like "[ERROR] path/File.cs:12 - message", not an object.
-Use LINE=0 when unknown. Set approved=false when the active Review Rules make any finding merge-blocking.
+
+Each findings/suggestions item MUST be a single string in this exact shape:
+  "[ERROR] path/File.cs:LINE - RR-012: description"
+  "[WARNING] path/File.cs:LINE - RR-014: description"
+  "[SUGGESTION] path/File.cs:LINE - concrete fix"
+
+Example:
+{
+  "approved": false,
+  "summary": "Review of the diff reveals multiple violations: ...",
+  "findings": [
+    "[ERROR] src/AppCore/.../ScheduledOrderCommandHandler.cs:1 - RR-013: Every *CommandHandler must have a matching *CommandValidator.",
+    "[ERROR] src/AppCore/.../ScheduledOrderCommandHandler.cs:1 - RR-012: namespace declaration must be the first code construct (before using directives)."
+  ],
+  "suggestions": [
+    "[SUGGESTION] src/AppCore/.../ScheduledOrderCommandHandler.cs:1 - Move namespace declaration before using directives using file-scoped namespace."
+  ]
+}
+
+Use LINE=1 when the issue starts at file top. Set approved=false when any [ERROR] / merge-blocking rule fails.
 Return ONLY the JSON object — no markdown fences or extra commentary.
 """
 
@@ -55,8 +73,10 @@ Report every violation as a finding string. Set approved=false when any [ERROR] 
 
 
 def build_skill_review_prompt(context: ReviewContext, *, output_format: str = "json") -> str:
-    """Skill-based reviews always request JSON — faster and avoids open-ended text parsing."""
-    parts: list[str] = [_SKILL_REVIEW_INSTRUCTIONS.strip(), "", _JSON_OUTPUT_CONTRACT.strip(), ""]
+    """Skill-based review prompt; JSON preferred, text format used as CLI retry fallback."""
+    fmt = (output_format or "json").strip().lower()
+    contract = _JSON_OUTPUT_CONTRACT if fmt == "json" else _TEXT_OUTPUT_CONTRACT
+    parts: list[str] = [_SKILL_REVIEW_INSTRUCTIONS.strip(), "", contract.strip(), ""]
 
     parts.append(f"Respond in language: {context.language}")
     parts.append("")

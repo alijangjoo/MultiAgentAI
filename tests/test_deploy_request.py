@@ -4,6 +4,7 @@ from shared.utils.jira_key_from_branch import extract_jira_key_from_branch
 from shared.utils.priority_map import jira_priority_to_pn
 from slices.deploy_request.message_builder import build_deploy_message
 from slices.deploy_request.models.state import DeployRequest
+from slices.deploy_request.pipeline_context import all_required_jobs_succeeded
 
 
 def test_extract_jira_key_from_feature_branch():
@@ -58,6 +59,15 @@ def test_build_deploy_message_contains_required_sections():
     assert "VEN-100" in msg
     assert "Developer Approval: Approved" in msg
     assert "@ebrahimi.mahrokh" in msg
+
+
+def test_all_required_jobs_ignores_superseded_retries():
+    jobs = [
+        {"id": 1, "name": "build", "status": "failed"},
+        {"id": 2, "name": "build", "status": "success"},
+        {"id": 3, "name": "deploy", "status": "success"},
+    ]
+    assert all_required_jobs_succeeded(jobs, pipeline_status="success") is True
 
 
 def test_build_deploy_message_defaults():

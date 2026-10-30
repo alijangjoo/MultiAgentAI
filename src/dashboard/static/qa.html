@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Agent — Branch QA</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    .qa-layout { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; align-items: start; }
+    @media (max-width: 960px) { .qa-layout { grid-template-columns: 1fr; } }
+    .qa-sidebar .panel { margin-bottom: 1rem; }
+    .field { margin-bottom: 0.75rem; }
+    .field label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 0.25rem; }
+    .field input, .field select, .field textarea {
+      width: 100%; background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 0.5rem; font-size: 0.85rem;
+    }
+    .field textarea { min-height: 140px; font-family: ui-monospace, monospace; font-size: 0.78rem; resize: vertical; }
+    .field textarea.tall { min-height: 200px; }
+    .btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+    .verdict { display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
+    .verdict.PASS { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+    .verdict.PASS_WITH_GAPS { background: rgba(245,158,11,0.2); color: #fcd34d; }
+    .verdict.FAIL, .verdict.NEEDS_INPUT { background: rgba(239,68,68,0.2); color: #fca5a5; }
+    .verdict.PENDING { background: rgba(148,163,184,0.2); color: #cbd5e1; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.6rem; margin-bottom: 1rem; }
+    .stat-card { background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem; }
+    .stat-card .label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; }
+    .stat-card .value { font-size: 1.2rem; font-weight: 700; margin-top: 0.1rem; }
+    .qa-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .qa-table th, .qa-table td { padding: 0.45rem 0.55rem; border-bottom: 1px solid var(--border); text-align: right; vertical-align: top; }
+    .qa-table th { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; }
+    .priority-critical { color: #f87171; }
+    .priority-high { color: #fb923c; }
+    .ac-covered { color: #6ee7b7; }
+    .ac-partial { color: #fcd34d; }
+    .ac-missing { color: #fca5a5; }
+    .history-item { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 0.82rem; }
+    .history-item:hover { background: rgba(255,255,255,0.03); }
+    .history-item.active { background: rgba(16,185,129,0.08); }
+    .meta { font-size: 0.75rem; color: var(--muted); }
+    .alert { padding: 0.65rem 0.75rem; border-radius: 6px; margin-bottom: 0.75rem; font-size: 0.82rem; }
+    .alert.warn { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35); color: #fcd34d; }
+    .alert.info { background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.35); color: #93c5fd; }
+    .tabs { display: flex; gap: 0.4rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .tabs button { background: var(--surface2, #1e2836); border: 1px solid var(--border); color: var(--text); padding: 0.35rem 0.7rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+    .tabs button.active { outline: 1px solid var(--accent, #10b981); color: var(--accent, #10b981); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .json-box { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.75rem; background: rgba(0,0,0,0.25); padding: 0.65rem; border-radius: 6px; max-height: 360px; overflow: auto; direction: ltr; text-align: left; }
+    .empty { color: var(--muted); padding: 1.25rem; text-align: center; }
+    .loading { opacity: 0.6; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+  <main class="page padded">
+    <div class="alert info">
+      <strong>QA Maturity Pattern:</strong> Branch diff + Acceptance Criteria + Feature Brief → Test Cases, Use Cases, Critical Flow impact, AC coverage.
+      اگر Acceptance Criteria یا Feature Brief خالی است، از دکمه «بارگذاری Template» استفاده کنید و تکمیل کنید.
+    </div>
+
+    <div class="panel" style="margin-bottom:1rem">
+      <div class="panel-header">
+        <span>DORA Metrics (30 days)</span>
+        <button type="button" class="secondary" onclick="loadDoraMetrics()">↻</button>
+      </div>
+      <div class="panel-body padded">
+        <div class="stat-grid" id="dora-grid">
+          <div class="stat-card"><div class="label">QA Runs</div><div class="value" id="dora-runs">—</div></div>
+          <div class="stat-card"><div class="label">Pass Rate</div><div class="value" id="dora-pass">—</div></div>
+          <div class="stat-card"><div class="label">Change Failure Rate</div><div class="value" id="dora-cfr">—</div></div>
+          <div class="stat-card"><div class="label">Lead Time (QA)</div><div class="value" id="dora-lead">—</div><div class="meta">minutes</div></div>
+          <div class="stat-card"><div class="label">Deploy Freq.</div><div class="value" id="dora-deploy">—</div><div class="meta">/ week</div></div>
+        </div>
+        <p class="meta" id="gate-status">Quality Gate: —</p>
+      </div>
+    </div>
+
+    <div class="qa-layout">
+      <aside class="qa-sidebar">
+        <div class="panel">
+          <div class="panel-header"><span>Branch &amp; Inputs</span></div>
+          <div class="panel-body padded">
+            <div class="field">
+              <label for="repo-path">مسیر Repo محلی (Git clone)</label>
+              <input id="repo-path" dir="ltr" style="text-align:left" placeholder="C:\Users\...\dizi_v2\dizi" />
+              <p class="meta" style="margin-top:0.25rem">برای <code>git diff</code> و Cursor Bridge. در مرورگر ذخیره می‌شود؛ در صورت خالی بودن از <code>CURSOR_REPO_PATH</code> در .env استفاده می‌شود.</p>
+            </div>
+            <div class="field">
+              <label for="branch">Feature Branch</label>
+              <input id="branch" list="branch-list" placeholder="feature/VEN-123-my-task" />
+              <datalist id="branch-list"></datalist>
+            </div>
+            <div class="field">
+              <label for="target">Target Branch</label>
+              <input id="target" placeholder="develop (default from settings)" />
+            </div>
+            <div class="field">
+              <label for="title">Title (optional)</label>
+              <input id="title" placeholder="Short feature title" />
+            </div>
+            <div class="field">
+              <label for="language">Output Language</label>
+              <select id="language">
+                <option value="fa" selected>فارسی</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="primary" id="btn-run" onclick="runQa()">اجرای QA</button>
+              <button type="button" class="secondary" onclick="loadTemplates()">بارگذاری Template</button>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="secondary" onclick="loadBranches()">Refresh Branches</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span>Acceptance Criteria</span></div>
+          <div class="panel-body padded">
+            <textarea id="ac" class="tall" placeholder="Acceptance Criteria (Given/When/Then)…"></textarea>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span>Feature Brief / PRD</span></div>
+          <div class="panel-body padded">
+            <textarea id="brief" class="tall" placeholder="Feature Brief / PRD…"></textarea>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>History</span>
+            <button type="button" class="secondary" onclick="loadHistory()">↻</button>
+          </div>
+          <div class="panel-body" id="history-list" style="max-height:280px;overflow-y:auto">
+            <div class="empty">Loading…</div>
+          </div>
+        </div>
+      </aside>
+
+      <section id="results">
+        <div class="panel">
+          <div class="panel-header">
+            <span>QA Results</span>
+            <span id="verdict-badge"></span>
+          </div>
+          <div class="panel-body padded" id="results-body">
+            <div class="empty">یک Branch انتخاب کنید، Acceptance Criteria را تکمیل کنید و «اجرای QA» را بزنید.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'QA Agent', 'Branch QA · Test Cases · Use Cases · AC Coverage', 'qa');
+    const API = Dashboard.API;
+    const QA_REPO_STORAGE_KEY = 'agentframework.qa_repo_path';
+    let activeResultTab = 'summary';
+    let currentRunId = null;
+
+    function getRepoPathForRequest() {
+      const el = document.getElementById('repo-path');
+      const value = (el && el.value || '').trim();
+      if (value) {
+        try { localStorage.setItem(QA_REPO_STORAGE_KEY, value); } catch (_) {}
+        return value;
+      }
+      return null;
+    }
+
+    async function initRepoPathField() {
+      const el = document.getElementById('repo-path');
+      if (!el) return;
+      try {
+        const saved = localStorage.getItem(QA_REPO_STORAGE_KEY);
+        if (saved && saved.trim()) {
+          el.value = saved.trim();
+          return;
+        }
+      } catch (_) {}
+      try {
+        const res = await fetch(`${API}/api/v1/settings/agent-executors`);
+        const data = await res.json();
+        if (data.cursor_repo_path) el.value = data.cursor_repo_path;
+      } catch (_) {}
+    }
+
+    document.getElementById('repo-path').addEventListener('change', () => {
+      const v = document.getElementById('repo-path').value.trim();
+      try {
+        if (v) localStorage.setItem(QA_REPO_STORAGE_KEY, v);
+        else localStorage.removeItem(QA_REPO_STORAGE_KEY);
+      } catch (_) {}
+    });
+
+    function jiraFromBranch(branch) {
+      const m = (branch || '').match(/([A-Za-z][A-Za-z0-9]+)-(\d+)/i);
+      return m ? `${m[1].toUpperCase()}-${m[2]}` : 'TBD';
+    }
+
+    async function loadBranches() {
+      try {
+        const res = await fetch(`${API}/api/v1/qa/branches?limit=150`);
+        const data = await res.json();
+        const list = document.getElementById('branch-list');
+        list.innerHTML = (data.branches || []).map(b => `<option value="${Dashboard.escapeHtml(b)}">`).join('');
+      } catch (_) {}
+    }
+
+    async function loadTemplates() {
+      const branch = document.getElementById('branch').value.trim();
+      const target = document.getElementById('target').value.trim();
+      const params = new URLSearchParams({
+        branch_name: branch,
+        target_branch: target,
+        jira_key: jiraFromBranch(branch),
+      });
+      const res = await fetch(`${API}/api/v1/qa/templates?${params}`);
+      const data = await res.json();
+      if (!document.getElementById('ac').value.trim()) {
+        document.getElementById('ac').value = data.acceptance_criteria_template || '';
+      }
+      if (!document.getElementById('brief').value.trim()) {
+        document.getElementById('brief').value = data.feature_brief_template || '';
+      }
+    }
+
+    function verdictClass(v) {
+      return (v || 'PENDING').replace(/\s+/g, '_').toUpperCase();
+    }
+
+    function renderMissingInputs(items) {
+      if (!items || !items.length) return '';
+      return `<div class="alert warn"><strong>ورودی‌های ناقص:</strong><ul style="margin:0.4rem 1.2rem 0">${items.map(i => `<li>${Dashboard.escapeHtml(i)}</li>`).join('')}</ul></div>`;
+    }
+
+    function showResultTab(name) {
+      activeResultTab = name;
+      ['summary', 'tests', 'usecases', 'coverage', 'flows', 'raw'].forEach(t => {
+        document.getElementById(`tab-${t}`)?.classList.toggle('active', t === name);
+        document.getElementById(`panel-${t}`)?.classList.toggle('active', t === name);
+      });
+    }
+
+    async function loadDoraMetrics() {
+      try {
+        const res = await fetch(`${API}/api/v1/qa/metrics?days=30`);
+        const m = await res.json();
+        document.getElementById('dora-runs').textContent = m.total_qa_runs ?? 0;
+        document.getElementById('dora-pass').textContent = (m.pass_rate_pct ?? 0) + '%';
+        document.getElementById('dora-cfr').textContent = (m.change_failure_rate_pct ?? 0) + '%';
+        document.getElementById('dora-lead').textContent = m.avg_qa_lead_time_minutes ?? 0;
+        document.getElementById('dora-deploy').textContent = m.deployment_frequency_per_week ?? 0;
+      } catch (_) {}
+    }
+
+    async function checkGate(branch) {
+      if (!branch) return;
+      try {
+        const res = await fetch(`${API}/api/v1/qa/gate?branch=${encodeURIComponent(branch)}`);
+        const data = await res.json();
+        const payload = data.detail && typeof data.detail === 'object' ? data.detail : data;
+        const ok = res.ok && payload.passed;
+        document.getElementById('gate-status').innerHTML = ok
+          ? `Quality Gate: <span class="verdict PASS">PASS</span> (${Dashboard.escapeHtml(payload.verdict || '')})`
+          : `Quality Gate: <span class="verdict FAIL">BLOCKED</span> — ${Dashboard.escapeHtml(payload.message || 'failed')}`;
+      } catch (_) {
+        document.getElementById('gate-status').textContent = 'Quality Gate: —';
+      }
+    }
+
+    async function exportTests(formats) {
+      if (!currentRunId) { alert('ابتدا QA را اجرا کنید'); return; }
+      const res = await fetch(`${API}/api/v1/qa/runs/${currentRunId}/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ formats }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      alert('فایل‌ها export شد:\n' + (data.files || []).map(f => f.relative || f.path).join('\n'));
+    }
+
+    async function attachJira() {
+      if (!currentRunId) { alert('ابتدا QA را اجرا کنید'); return; }
+      const res = await fetch(`${API}/api/v1/qa/runs/${currentRunId}/attach-jira`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+      alert(`Test Cases به Jira (${data.issue_key}) attach شد`);
+    }
+
+    function renderQaResult(data, runId) {
+      if (runId) currentRunId = runId;
+      else if (data.run_id) currentRunId = data.run_id;
+      const qa = data.qa || {};
+      const verdict = qa.verdict || 'PENDING';
+      document.getElementById('verdict-badge').innerHTML = `<span class="verdict ${verdictClass(verdict)}">${Dashboard.escapeHtml(verdict)}</span>`;
+      if (data.branch_name) checkGate(data.branch_name);
+
+      const testCases = qa.test_cases || [];
+      const useCases = qa.use_cases || [];
+      const acCoverage = qa.ac_coverage || [];
+      const flows = qa.critical_flows || [];
+      const gaps = qa.gaps || [];
+      const auto = qa.automation_suggestions || [];
+
+      document.getElementById('results-body').innerHTML = `
+        ${renderMissingInputs(qa.missing_inputs)}
+        <div class="stat-grid">
+          <div class="stat-card"><div class="label">Test Cases</div><div class="value">${testCases.length}</div></div>
+          <div class="stat-card"><div class="label">Use Cases</div><div class="value">${useCases.length}</div></div>
+          <div class="stat-card"><div class="label">AC Items</div><div class="value">${acCoverage.length}</div></div>
+          <div class="stat-card"><div class="label">Changed Files</div><div class="value">${(data.changed_files || []).length}</div></div>
+          <div class="stat-card"><div class="label">Ready</div><div class="value">${qa.ready ? '✓' : '—'}</div></div>
+        </div>
+        <p>${Dashboard.escapeHtml(qa.summary || '')}</p>
+        <div class="btn-row" style="margin-bottom:0.75rem">
+          <button type="button" class="secondary" onclick="exportTests(['pytest','cypress','markdown']).catch(e=>alert(e.message))">Export pytest + Cypress</button>
+          <button type="button" class="secondary" onclick="attachJira().catch(e=>alert(e.message))">Attach to Jira</button>
+        </div>
+        <div class="tabs">
+          <button type="button" id="tab-summary" class="active" onclick="showResultTab('summary')">Summary</button>
+          <button type="button" id="tab-tests" onclick="showResultTab('tests')">Test Cases</button>
+          <button type="button" id="tab-usecases" onclick="showResultTab('usecases')">Use Cases</button>
+          <button type="button" id="tab-coverage" onclick="showResultTab('coverage')">AC Coverage</button>
+          <button type="button" id="tab-flows" onclick="showResultTab('flows')">Critical Flows</button>
+          <button type="button" id="tab-raw" onclick="showResultTab('raw')">Raw / CLI</button>
+        </div>
+        <div id="panel-summary" class="tab-panel active">
+          ${gaps.length ? `<h4 style="font-size:0.85rem;margin:0.5rem 0">Gaps</h4><ul>${gaps.map(g => `<li>${Dashboard.escapeHtml(g)}</li>`).join('')}</ul>` : '<p class="meta">No gaps reported.</p>'}
+          ${auto.length ? `<h4 style="font-size:0.85rem;margin:0.5rem 0">Automation Suggestions</h4><ul>${auto.map(a => `<li>${Dashboard.escapeHtml(a)}</li>`).join('')}</ul>` : ''}
+          <p class="meta">Branch: ${Dashboard.escapeHtml(data.branch_name || '')} → ${Dashboard.escapeHtml(data.target_branch || '')} · ${Dashboard.escapeHtml(data.task_key || '')} · ${Dashboard.escapeHtml(data.executor || '')}/${Dashboard.escapeHtml(data.backend || '')}</p>
+        </div>
+        <div id="panel-tests" class="tab-panel">
+          ${testCases.length ? `<table class="qa-table"><thead><tr><th>ID</th><th>Title</th><th>Priority</th><th>Steps</th><th>Expected</th></tr></thead><tbody>
+            ${testCases.map(tc => `<tr>
+              <td>${Dashboard.escapeHtml(tc.id)}</td>
+              <td>${Dashboard.escapeHtml(tc.title)}<div class="meta">${Dashboard.escapeHtml(tc.linked_ac || '')}</div></td>
+              <td class="priority-${Dashboard.escapeHtml(tc.priority)}">${Dashboard.escapeHtml(tc.priority)}</td>
+              <td>${(tc.steps || []).map(s => `<div>• ${Dashboard.escapeHtml(s)}</div>`).join('')}</td>
+              <td>${Dashboard.escapeHtml(tc.expected_result || '')}</td>
+            </tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No test cases generated</div>'}
+        </div>
+        <div id="panel-usecases" class="tab-panel">
+          ${useCases.length ? useCases.map(uc => `
+            <div style="margin-bottom:0.75rem;padding-bottom:0.75rem;border-bottom:1px solid var(--border)">
+              <strong>${Dashboard.escapeHtml(uc.id)}</strong> — ${Dashboard.escapeHtml(uc.actor)}: ${Dashboard.escapeHtml(uc.goal)}
+              <div class="meta" style="margin-top:0.35rem">Main: ${(uc.main_flow || []).map(s => Dashboard.escapeHtml(s)).join(' → ')}</div>
+            </div>`).join('') : '<div class="empty">No use cases generated</div>'}
+        </div>
+        <div id="panel-coverage" class="tab-panel">
+          ${acCoverage.length ? `<table class="qa-table"><thead><tr><th>ID</th><th>Criterion</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
+            ${acCoverage.map(ac => `<tr>
+              <td>${Dashboard.escapeHtml(ac.criterion_id)}</td>
+              <td>${Dashboard.escapeHtml(ac.criterion)}</td>
+              <td class="ac-${Dashboard.escapeHtml(ac.status)}">${Dashboard.escapeHtml(ac.status)}</td>
+              <td>${Dashboard.escapeHtml(ac.evidence || '')}</td>
+            </tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No AC coverage mapping</div>'}
+        </div>
+        <div id="panel-flows" class="tab-panel">
+          ${flows.length ? `<ul>${flows.map(f => `<li>${Dashboard.escapeHtml(f)}</li>`).join('')}</ul>` : '<div class="empty">No critical flows identified</div>'}
+        </div>
+        <div id="panel-raw" class="tab-panel">
+          <div class="json-box">${Dashboard.escapeHtml(data.cli_stdout || JSON.stringify(qa, null, 2))}</div>
+        </div>
+      `;
+      showResultTab(activeResultTab);
+    }
+
+    async function runQa() {
+      const branch = document.getElementById('branch').value.trim();
+      if (!branch) { alert('Branch را وارد کنید'); return; }
+      const btn = document.getElementById('btn-run');
+      const layout = document.querySelector('.qa-layout');
+      btn.disabled = true;
+      layout.classList.add('loading');
+      document.getElementById('results-body').innerHTML = '<div class="empty">در حال تحلیل Branch… (ممکن است چند دقیقه طول بکشد)</div>';
+
+      try {
+        const res = await fetch(`${API}/api/v1/qa/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            branch_name: branch,
+            target_branch: document.getElementById('target').value.trim() || null,
+            repo_path: getRepoPathForRequest(),
+            acceptance_criteria: document.getElementById('ac').value,
+            feature_brief: document.getElementById('brief').value,
+            title: document.getElementById('title').value.trim() || null,
+            language: document.getElementById('language').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || res.statusText);
+        renderQaResult(data, data.run_id);
+        loadHistory();
+        loadDoraMetrics();
+      } catch (err) {
+        document.getElementById('results-body').innerHTML = `<div class="alert warn">${Dashboard.escapeHtml(String(err.message || err))}</div>`;
+      } finally {
+        btn.disabled = false;
+        layout.classList.remove('loading');
+      }
+    }
+
+    async function loadHistory() {
+      const el = document.getElementById('history-list');
+      try {
+        const res = await fetch(`${API}/api/v1/qa/runs?limit=30`);
+        const runs = await res.json();
+        if (!runs.length) {
+          el.innerHTML = '<div class="empty">No QA runs yet</div>';
+          return;
+        }
+        el.innerHTML = runs.map(r => `
+          <div class="history-item" data-id="${r.id}" onclick="loadRun('${r.id}')">
+            <div><strong>${Dashboard.escapeHtml(r.branch_name || '—')}</strong>
+              <span class="verdict ${verdictClass(r.verdict)}">${Dashboard.escapeHtml(r.verdict || r.status)}</span></div>
+            <div class="meta">${(r.created_at || '').replace('T',' ').slice(0,19)} · ${r.test_case_count} tests</div>
+          </div>`).join('');
+      } catch (_) {
+        el.innerHTML = '<div class="empty">Could not load history</div>';
+      }
+    }
+
+    async function loadRun(runId) {
+      document.querySelectorAll('.history-item').forEach(el => el.classList.toggle('active', el.dataset.id === runId));
+      const res = await fetch(`${API}/api/v1/qa/runs/${runId}`);
+      const run = await res.json();
+      if (run.output_payload) renderQaResult(run.output_payload, runId);
+    }
+
+    document.getElementById('branch').addEventListener('change', () => {
+      if (!document.getElementById('ac').value.trim()) loadTemplates();
+      checkGate(document.getElementById('branch').value.trim());
+    });
+
+    initRepoPathField();
+    loadBranches();
+    loadHistory();
+    loadTemplates();
+    loadDoraMetrics();
+  </script>
+</body>
+</html>

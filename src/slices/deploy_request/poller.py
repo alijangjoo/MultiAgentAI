@@ -12,8 +12,9 @@ from shared.integrations.registry import get_integrations
 from slices.deploy_request.models.state import DeployRequestStatus
 from slices.deploy_request.orchestrator import DeployRequestOrchestrator
 from slices.deploy_request.pipeline_context import (
-    all_required_jobs_succeeded,
     is_stg_version_tag,
+    list_stg_tag_pipelines,
+    pipeline_fully_succeeded,
 )
 from slices.deploy_request.repository import DeployRequestRepository
 
@@ -21,48 +22,6 @@ logger = logging.getLogger(__name__)
 
 _poll_task: asyncio.Task | None = None
 _stop_event: asyncio.Event | None = None
-
-
-async def _list_stg_tag_pipelines(gitlab: Any, limit: int) -> list[dict[str, Any]]:
-    """Recent successful Stage release tag pipelines (newest first)."""
-    try:
-        pipes = await gitlab.list_pipelines(
-            status="success",
-            limit=limit,
-            scope="tags",
-        )
-    except TypeError:
-        pipes = await gitlab.list_pipelines(status="success", limit=max(limit, 50))
-
-    stg = [p for p in pipes if is_stg_version_tag(p.get("ref"))]
-    stg.sort(key=lambda p: int(p.get("id") or 0), reverse=True)
-    return stg
-
-
-async def _pipeline_fully_succeeded(
-    gitlab: Any, pipeline_id: int
-) -> tuple[bool, list[dict[str, Any]], dict[str, Any] | None]:
-    """Re-check pipeline status + jobs before registering."""
-    detail: dict[str, Any] | None = None
-    if hasattr(gitlab, "get_pipeline"):
-        try:
-            detail = await gitlab.get_pipeline(pipeline_id)
-            if (detail.get("status") or "").lower() != "success":
-                return False, [], detail
-        except Exception:
-            detail = None
-
-    if not hasattr(gitlab, "list_pipeline_jobs"):
-        return False, [], detail
-
-    try:
-        jobs = await gitlab.list_pipeline_jobs(pipeline_id)
-    except Exception:
-        return False, [], detail
-
-    if not jobs or not all_required_jobs_succeeded(jobs):
-        return False, jobs or [], detail
-    return True, jobs, detail
 
 
 async def poll_deploy_requests_once() -> dict[str, Any]:
@@ -89,7 +48,7 @@ async def poll_deploy_requests_once() -> dict[str, Any]:
     errors: list[str] = []
 
     try:
-        pipes = await _list_stg_tag_pipelines(gitlab, scan_limit)
+        pipes = await list_stg_tag_pipelines(gitlab, scan_limit)
     except Exception as exc:
         logger.exception("Deploy poll: list tag pipelines failed")
         return {
@@ -123,7 +82,7 @@ async def poll_deploy_requests_once() -> dict[str, Any]:
             # Already tracked and not published — already visible in Ready; skip re-create
             continue
 
-        ok, jobs, detail = await _pipeline_fully_succeeded(gitlab, pid_i)
+        ok, jobs, detail = await pipeline_fully_succeeded(gitlab, pid_i)
         if not ok:
             skipped_incomplete += 1
             continue

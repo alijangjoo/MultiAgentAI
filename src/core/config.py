@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     code_review_model: str = "composer-2.5"
     pm_model: str = "gpt-4o"
     prd_template_path: str = "docs/templates/PRD_TEMPLATE.md"
+    qa_acceptance_criteria_template_path: str = "docs/templates/qa/ACCEPTANCE_CRITERIA_TEMPLATE.md"
+    qa_feature_brief_template_path: str = "docs/templates/qa/FEATURE_BRIEF_TEMPLATE.md"
+    qa_language: str = "fa"
+    qa_export_dir: str = "data/qa_exports"
+    qa_gate_enabled: bool = True
+    qa_gate_allowed_verdicts: str = "PASS,PASS_WITH_GAPS"
+    qa_export_commit_to_branch: bool = False
 
     forge_executor: str = "cursor"
     sentinel_executor: str = "cursor"
@@ -38,6 +45,8 @@ class Settings(BaseSettings):
     cursor_model: str = "composer-2.5"
     cursor_cli_bin: str = "agent"
     cursor_cli_timeout_seconds: int = 300
+    # Subprocess timeout for MR review (ask+json is usually faster than agent+workspace).
+    cursor_cli_review_timeout_seconds: int = 120
     cursor_cli_output_format: str = "text"
     cursor_cli_review_output_format: str = "json"
     cursor_cli_mode: str = "ask"
@@ -49,6 +58,11 @@ class Settings(BaseSettings):
     cursor_review_use_worktree: bool = True
     cursor_review_worktree_root: str = ""
     cursor_review_git_timeout_seconds: int = 90
+    # RTK (https://github.com/rtk-ai/rtk) — compress git diff before review prompt
+    cursor_review_use_rtk: bool = False
+    rtk_bin: str = "rtk"
+    rtk_timeout_seconds: int = 60
+    cursor_review_rtk_max_context_lines: int = 3
     cursor_review_fallback_9router: bool = True
     http_proxy: str = ""
     https_proxy: str = ""
@@ -128,7 +142,7 @@ class Settings(BaseSettings):
     dizi_db_stage_name: str = "dizi_db"
     dizi_db_connect_timeout_seconds: int = 10
 
-    dizi_repo_path: str = r"C:\Users\jangjoo.ali\source\repos\dizi_new\dizi"
+    dizi_repo_path: str = r"C:\Users\jangjoo.ali\source\repos\dizi_v2\dizi"
     dizi_src_relative: str = "src"
     dizi_legacy_api_relative: str = "Dizi"
     dizi_spec_branch: str = "dev-oms-v2"

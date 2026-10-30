@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,33 @@ class ReviewWorkspace:
     skill_path: Path
 
 
+def _summarize_git_failure_output(text: str) -> str:
+    if not text:
+        return ""
+    if "Filename too long" in text or "filename too long" in text.lower():
+        lines = [
+            ln
+            for ln in text.splitlines()
+            if "Filename too long" in ln or ln.strip().startswith("fatal:")
+        ]
+        hint = (
+            "Windows MAX_PATH: set CURSOR_REVIEW_WORKTREE_ROOT to a short path "
+            "(e.g. D:\\wt), run `git config core.longpaths true` in the main clone, "
+            "and enable long paths in Windows (gpedit or "
+            "Computer\\HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control"
+            "\\FileSystem\\LongPathsEnabled=1)."
+        )
+        body = "\n".join(lines[:8]) if lines else "Filename too long"
+        return f"{body}\n{hint}"
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("Updating files:")]
+    compact = "\n".join(lines).strip()
+    if not compact:
+        compact = text.strip()
+    if len(compact) > 1500:
+        return f"{compact[:700]}\n...[truncated]...\n{compact[-700:]}"
+    return compact
+
+
 def _run_git(
     args: list[str],
     *,
@@ -41,7 +70,7 @@ def _run_git(
     timeout = timeout_seconds or settings.cursor_review_git_timeout_seconds
     try:
         return subprocess.run(
-            ["git", *args],
+            ["git", "-c", "core.longpaths=true", *args],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -59,7 +88,8 @@ def _run_git(
 def _git_output(args: list[str], *, cwd: Path) -> str:
     result = _run_git(args, cwd=cwd)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        raw = (result.stderr or result.stdout or "").strip()
+        detail = _summarize_git_failure_output(raw)
         raise ReviewWorkspaceError(f"git {' '.join(args)} failed: {detail}")
     return (result.stdout or "").strip()
 
@@ -69,7 +99,19 @@ def _worktree_root(repo_path: Path) -> Path:
     configured = (settings.cursor_review_worktree_root or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
+    if sys.platform == "win32":
+        local = (os.environ.get("LOCALAPPDATA") or "").strip()
+        if local:
+            return (Path(local) / "af" / "wt").resolve()
     return (repo_path.parent / ".agentframework-review-worktrees").resolve()
+
+
+def _worktree_dir_name(mr_iid: int) -> str:
+    return f"m{mr_iid}-{uuid.uuid4().hex[:8]}"
+
+
+def _ensure_repo_longpaths(repo_path: Path) -> None:
+    _run_git(["config", "core.longpaths", "true"], cwd=repo_path, check=False)
 
 
 def materialize_review_skill(workspace: Path, skill_body: str) -> Path:
@@ -98,9 +140,13 @@ def _create_review_worktree_sync(
     if not branch:
         raise ReviewWorkspaceError("MR source branch is required for review workspace")
 
-    worktree_dir = _worktree_root(repo_path) / f"mr-{mr_iid}-{run_id[:8]}-{uuid.uuid4().hex[:6]}"
+    root = _worktree_root(repo_path)
+    root.mkdir(parents=True, exist_ok=True)
+    worktree_dir = root / _worktree_dir_name(mr_iid)
     if worktree_dir.exists():
         shutil.rmtree(worktree_dir, ignore_errors=True)
+
+    _ensure_repo_longpaths(repo_path)
 
     if progress:
         progress.sync_log("git_fetch", f"git fetch origin {branch}")

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RTK Token Savings</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+  <style>
+    .rtk-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .rtk-tabs button { background: var(--surface2, #1e2836); border: 1px solid var(--border); color: var(--text); padding: 0.45rem 0.85rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .rtk-tabs button.active { outline: 1px solid var(--accent, #10b981); color: var(--accent, #10b981); }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .stat-card { background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; border-top: 3px solid var(--accent, #10b981); }
+    .stat-card.warn { border-top-color: #f59e0b; }
+    .stat-card .label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; }
+    .stat-card .value { font-size: 1.45rem; font-weight: 700; margin-top: 0.15rem; }
+    .stat-card .sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.2rem; }
+    .rtk-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .rtk-table th, .rtk-table td { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--border); text-align: left; }
+    .rtk-table th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
+    .rtk-table tr:hover td { background: rgba(255,255,255,0.03); }
+    .method-badge { font-family: ui-monospace, monospace; font-size: 0.75rem; padding: 0.1rem 0.35rem; border-radius: 4px; background: rgba(16,185,129,0.15); color: #6ee7b7; }
+    .method-badge.internal { background: rgba(59,130,246,0.15); color: #93c5fd; }
+    .method-badge.none { background: rgba(148,163,184,0.15); color: #cbd5e1; }
+    .json-box { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.78rem; background: rgba(0,0,0,0.25); padding: 0.75rem; border-radius: 6px; max-height: 480px; overflow: auto; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .empty { color: var(--muted); padding: 1.5rem; text-align: center; }
+    .bar-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem; }
+    .bar-track { flex: 1; height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; background: linear-gradient(90deg, #10b981, #3b82f6); border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div id="app-header"></div>
+  <main class="page padded">
+    <div class="rtk-tabs">
+      <button type="button" id="tab-review" class="active" onclick="showTab('review')">Review Savings (AgentFramework)</button>
+      <button type="button" id="tab-cli" onclick="showTab('cli')">RTK CLI Global (`rtk gain`)</button>
+    </div>
+
+    <div id="panel-review" class="tab-panel active">
+      <div class="stat-grid" id="stats-grid"></div>
+      <div class="panel">
+        <div class="panel-header">
+          <span>Compression events</span>
+          <button type="button" class="secondary" onclick="loadReviewSavings()">Refresh</button>
+        </div>
+        <div class="panel-body padded" style="overflow-x:auto">
+          <div id="method-bars" style="margin-bottom:1rem"></div>
+          <table class="rtk-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>MR</th>
+                <th>Source</th>
+                <th>Method</th>
+                <th>Before</th>
+                <th>After</th>
+                <th>Saved</th>
+                <th>%</th>
+              </tr>
+            </thead>
+            <tbody id="savings-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-cli" class="tab-panel">
+      <div class="panel">
+        <div class="panel-header">
+          <span>RTK CLI analytics</span>
+          <button type="button" class="secondary" onclick="loadCliGain()">Refresh</button>
+        </div>
+        <div class="panel-body padded">
+          <p class="meta" id="cli-meta">—</p>
+          <div id="cli-content" class="json-box">Loading RTK CLI gain…</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'RTK', 'Token savings · Review diff compression', 'rtk');
+    const API = Dashboard.API;
+    let activeTab = 'review';
+
+    function showTab(name) {
+      activeTab = name;
+      ['review', 'cli'].forEach(t => {
+        document.getElementById(`tab-${t}`)?.classList.toggle('active', t === name);
+        document.getElementById(`panel-${t}`)?.classList.toggle('active', t === name);
+      });
+      if (name === 'cli') loadCliGain();
+    }
+
+    function fmt(n) {
+      return Number(n || 0).toLocaleString();
+    }
+
+    function methodClass(m) {
+      if (m === 'internal') return 'internal';
+      if (m === 'none') return 'none';
+      return '';
+    }
+
+    function renderStats(stats) {
+      const grid = document.getElementById('stats-grid');
+      grid.innerHTML = `
+        <div class="stat-card"><div class="label">Events</div><div class="value">${fmt(stats.total_events)}</div></div>
+        <div class="stat-card warn"><div class="label">Tokens before RTK</div><div class="value">${fmt(stats.total_raw_tokens)}</div></div>
+        <div class="stat-card"><div class="label">Tokens after RTK</div><div class="value">${fmt(stats.total_compressed_tokens)}</div></div>
+        <div class="stat-card"><div class="label">Tokens saved</div><div class="value">${fmt(stats.total_tokens_saved)}</div><div class="sub">${stats.overall_savings_pct}% overall</div></div>
+        <div class="stat-card ${stats.rtk_binary_available ? '' : 'warn'}"><div class="label">RTK binary</div><div class="value" style="font-size:1rem">${stats.rtk_binary_available ? 'Installed' : 'Not found'}</div><div class="sub">internal fallback when missing</div></div>
+      `;
+
+      const bars = document.getElementById('method-bars');
+      const methods = stats.by_method || [];
+      if (!methods.length) {
+        bars.innerHTML = '';
+        return;
+      }
+      const maxSaved = Math.max(...methods.map(m => m.tokens_saved), 1);
+      bars.innerHTML = '<div class="meta" style="margin-bottom:0.5rem">Saved tokens by method</div>' +
+        methods.map(m => `
+          <div class="bar-row">
+            <span class="method-badge ${methodClass(m.method)}">${m.method}</span>
+            <span style="width:3rem;text-align:right">${fmt(m.tokens_saved)}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.round(m.tokens_saved / maxSaved * 100)}%"></div></div>
+            <span class="meta">${m.count}×</span>
+          </div>
+        `).join('');
+    }
+
+    function renderTable(items) {
+      const body = document.getElementById('savings-body');
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty">No RTK events yet — run an MR Review</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map(row => `
+        <tr>
+          <td class="meta">${(row.created_at || '').replace('T', ' ').slice(0, 19)}</td>
+          <td>${row.mr_iid ? `!${row.mr_iid}` : '—'}</td>
+          <td>${Dashboard.escapeHtml(row.source)}</td>
+          <td><span class="method-badge ${methodClass(row.method)}">${Dashboard.escapeHtml(row.method)}</span></td>
+          <td>${fmt(row.raw_tokens)}</td>
+          <td>${fmt(row.compressed_tokens)}</td>
+          <td><strong>${fmt(row.tokens_saved)}</strong></td>
+          <td>${Number(row.savings_pct || 0).toFixed(0)}%</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadReviewSavings() {
+      try {
+        const res = await fetch(`${API}/api/v1/rtk/savings?limit=100`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to load');
+        renderStats(data.stats);
+        renderTable(data.items || []);
+      } catch (err) {
+        document.getElementById('savings-body').innerHTML =
+          `<tr><td colspan="8" class="empty">Error: ${Dashboard.escapeHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    async function loadCliGain() {
+      const meta = document.getElementById('cli-meta');
+      const box = document.getElementById('cli-content');
+      try {
+        const res = await fetch(`${API}/api/v1/rtk/gain`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        if (!data.installed) {
+          meta.textContent = data.message;
+          box.textContent = 'Install RTK to see global shell-hook savings.\nSee docs/RTK_REVIEW.md';
+          return;
+        }
+        meta.textContent = data.message === 'ok'
+          ? 'From `rtk gain --all --format json` (global Cursor/shell hook usage)'
+          : data.message;
+        box.textContent = data.data
+          ? JSON.stringify(data.data, null, 2)
+          : '(empty response)';
+      } catch (err) {
+        meta.textContent = 'Error';
+        box.textContent = err.message;
+      }
+    }
+
+    loadReviewSavings();
+  </script>
+</body>
+</html>

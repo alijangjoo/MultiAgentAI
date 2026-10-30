@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from core.config import get_settings
@@ -19,6 +21,36 @@ from shared.models.domain import AgentName, CodeReviewResult, MergeRequestInfo
 from shared.persistence.repository import AgentRunRepository
 from slices.knowledge.review_docs import get_review_docs_service
 from slices.knowledge.review_package import ReviewKnowledgePackage
+
+
+async def _cursor_bridge_review_with_heartbeat(
+    *,
+    progress: ReviewProgressReporter | None,
+    heartbeat_seconds: float = 15.0,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Call Cursor Bridge while emitting SSE heartbeats so the UI does not look frozen."""
+    task = asyncio.create_task(cursor_bridge_review(**kwargs))
+    started = time.monotonic()
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=heartbeat_seconds)
+        except TimeoutError:
+            if progress:
+                elapsed = int(time.monotonic() - started)
+                await progress.log(
+                    "cursor_bridge",
+                    f"Cursor CLI subprocess running… ({elapsed}s elapsed)",
+                )
+    return await task
+
+
+def _review_cli_workspace(worktree_path: str | None) -> str | None:
+    """Worktree holds SKILL.md for audit; CLI gets --workspace only when configured."""
+    settings = get_settings()
+    if not settings.cursor_cli_review_use_workspace:
+        return None
+    return worktree_path
 
 
 def _item_to_string(item: Any) -> str:
@@ -166,6 +198,14 @@ def build_review_prompt(
     )
 
 
+def _review_bridge_mode_label(*, use_workspace: bool) -> str:
+    settings = get_settings()
+    mode = (settings.cursor_cli_review_mode or "agent").strip() or "agent"
+    if use_workspace:
+        return f"{mode}+json, --workspace enabled"
+    return f"{mode}+json, diff-only (no --workspace)"
+
+
 async def execute_review(
     *,
     run_id: str,
@@ -220,6 +260,29 @@ async def execute_review(
             knowledge_package=knowledge_package,
             language=settings.cursor_review_language,
         )
+        from shared.rtk.savings_repository import persist_rtk_from_context_extra
+
+        await persist_rtk_from_context_extra(
+            review_context.extra_context,
+            git_diff=review_context.git_diff,
+            git_diff_raw=review_context.git_diff_raw,
+            run_id=run_id,
+            source="review_context",
+            mr_iid=mr.iid,
+            task_key=task_key,
+        )
+        if progress and review_context.extra_context and review_context.extra_context.get(
+            "rtk_compression"
+        ):
+            stats = review_context.extra_context.get("rtk_stats") or {}
+            await progress.log(
+                "rtk",
+                str(review_context.extra_context["rtk_compression"]),
+                raw_tokens=stats.get("raw_tokens"),
+                compressed_tokens=stats.get("compressed_tokens"),
+                tokens_saved=stats.get("tokens_saved"),
+                method=stats.get("method"),
+            )
         skill_prompt = prompt
 
         try:
@@ -246,6 +309,46 @@ async def execute_review(
                         skill_context = review_context.model_copy(
                             update={"use_review_skill": True}
                         )
+                        from shared.cursor_cli.rtk_compress import (
+                            apply_rtk_to_review_context_fields,
+                        )
+                        from shared.rtk.savings_repository import persist_rtk_savings
+
+                        if settings.cursor_review_use_rtk:
+                            prompt_diff, scanner_diff, rtk_stats = (
+                                apply_rtk_to_review_context_fields(
+                                    review_context.git_diff_raw or review_context.git_diff,
+                                    settings=settings,
+                                    repo_path=workspace.path,
+                                    base_ref=(
+                                        f"origin/{mr.target_branch}"
+                                        if mr.target_branch
+                                        else None
+                                    ),
+                                )
+                            )
+                            skill_context = skill_context.model_copy(
+                                update={
+                                    "git_diff": prompt_diff,
+                                    "git_diff_raw": scanner_diff,
+                                }
+                            )
+                            await persist_rtk_savings(
+                                rtk_stats,
+                                run_id=run_id,
+                                source="review_worktree",
+                                mr_iid=mr.iid,
+                                task_key=task_key,
+                            )
+                            if progress:
+                                await progress.log(
+                                    "rtk",
+                                    f"Diff compressed for review prompt — {rtk_stats.note}",
+                                    method=rtk_stats.method,
+                                    raw_tokens=rtk_stats.raw_tokens,
+                                    compressed_tokens=rtk_stats.compressed_tokens,
+                                    tokens_saved=rtk_stats.tokens_saved,
+                                )
                         from shared.cursor_cli.prompt_builder import (
                             build_review_prompt as build_cli_review_prompt,
                         )
@@ -271,18 +374,24 @@ async def execute_review(
                                 "branch": branch_name,
                             },
                         )
+                        bridge_workspace = _review_cli_workspace(str(workspace.path))
+                        bridge_mode = _review_bridge_mode_label(
+                            use_workspace=bool(bridge_workspace)
+                        )
                         if progress:
                             await progress.log(
                                 "cursor_bridge",
-                                "Calling Cursor Bridge → agent subprocess (--workspace, --mode agent)",
-                                workspace=str(workspace.path),
+                                f"Calling Cursor Bridge → {bridge_mode}",
+                                workspace=str(workspace.path) if bridge_workspace else None,
+                                worktree=str(workspace.path),
                             )
-                        result = await cursor_bridge_review(
+                        result = await _cursor_bridge_review_with_heartbeat(
+                            progress=progress,
                             run_id=run_id,
                             task_key=task_key,
                             branch_name=branch_name,
                             context=skill_context.model_dump(),
-                            workspace=str(workspace.path),
+                            workspace=bridge_workspace,
                         )
                         if progress:
                             backend = result.get("backend") or "cursor-cli"
@@ -297,9 +406,18 @@ async def execute_review(
                         "review_workspace_failed",
                         str(exc),
                     )
-                    raise CursorBridgeError(
-                        f"Review workspace setup failed: {exc}. "
+                    hint = (
                         f"Check CURSOR_REPO_PATH and that origin/{branch_name} exists."
+                    )
+                    if "Filename too long" in str(exc):
+                        hint = (
+                            "Windows path limit hit during git worktree checkout. "
+                            "Set CURSOR_REVIEW_WORKTREE_ROOT to a short path (e.g. D:\\wt), "
+                            "enable `git config core.longpaths true` in the clone, "
+                            "then retry."
+                        )
+                    raise CursorBridgeError(
+                        f"Review workspace setup failed: {exc}. {hint}"
                     ) from exc
             else:
                 if progress:
@@ -307,7 +425,8 @@ async def execute_review(
                         "cursor_bridge",
                         "Calling Cursor Bridge (inline prompt, no worktree)",
                     )
-                result = await cursor_bridge_review(
+                result = await _cursor_bridge_review_with_heartbeat(
+                    progress=progress,
                     run_id=run_id,
                     task_key=task_key,
                     branch_name=branch_name,
@@ -334,9 +453,21 @@ async def execute_review(
             "command": result.get("cli_command"),
         }
         if progress:
+            display_parts: list[str] = []
             if cli_stdout.strip():
-                await progress.cli_output("stdout", cli_stdout, **cli_meta)
-            if cli_stderr.strip():
+                display_parts.append(cli_stdout.strip())
+            if cli_stderr.strip() and cli_stderr.strip() not in cli_stdout:
+                display_parts.append(f"=== stderr ===\n{cli_stderr.strip()}")
+            review_dump = result.get("review")
+            if not display_parts and isinstance(review_dump, dict):
+                import json as _json
+
+                display_parts.append(
+                    _json.dumps(review_dump, ensure_ascii=False, indent=2)
+                )
+            if display_parts:
+                await progress.cli_output("stdout", "\n\n".join(display_parts), **cli_meta)
+            elif cli_stderr.strip():
                 await progress.cli_output("stderr", cli_stderr, **cli_meta)
 
         review_data = result.get("review") or result

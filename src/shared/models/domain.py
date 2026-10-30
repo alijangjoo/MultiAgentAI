@@ -16,6 +16,7 @@ class AgentName(StrEnum):
     AEGIS = "aegis"
     MERIDIAN = "meridian"
     SAGE = "sage"
+    QA = "qa"
     ORCHESTRATOR = "orchestrator"
     DEPLOY = "deploy"
 
@@ -27,6 +28,7 @@ class WorkflowType(StrEnum):
     KNOWLEDGE_QUERY = "knowledge_query"
     KNOWLEDGE_INGEST = "knowledge_ingest"
     MR_CODE_REVIEW = "mr_code_review"
+    BRANCH_QA = "branch_qa"
     PRD_WORKFLOW = "prd_workflow"
     DEPLOY_REQUEST = "deploy_request"
 

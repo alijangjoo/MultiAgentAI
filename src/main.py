@@ -18,6 +18,8 @@ from api.routes.gitlab_webhooks import router as gitlab_webhooks_router
 from api.routes.jira_tasks import router as jira_tasks_router
 from api.routes.knowledge import router as knowledge_router
 from api.routes.product_manager import router as product_manager_router
+from api.routes.qa import router as qa_router
+from api.routes.rtk import router as rtk_router
 from core.config import get_settings
 from core.logging import configure_logging
 from core.tracing import flush_tracing, init_tracing, tracing_status
@@ -71,6 +73,8 @@ def create_app() -> FastAPI:
     app.include_router(gitlab_webhooks_router)
     app.include_router(knowledge_router)
     app.include_router(product_manager_router)
+    app.include_router(rtk_router)
+    app.include_router(qa_router)
     app.include_router(ws_router)
 
     if DASHBOARD_DIR.exists():
@@ -144,6 +148,20 @@ def create_app() -> FastAPI:
         if page.exists():
             return FileResponse(str(page), media_type="text/html")
         return {"error": "Review dashboard not found", "expected_path": str(page)}
+
+    @app.get("/dashboard/rtk", include_in_schema=False)
+    async def rtk_dashboard():
+        page = DASHBOARD_DIR / "rtk.html"
+        if page.exists():
+            return FileResponse(str(page), media_type="text/html")
+        return {"error": "RTK dashboard not found", "expected_path": str(page)}
+
+    @app.get("/dashboard/qa", include_in_schema=False)
+    async def qa_dashboard():
+        page = DASHBOARD_DIR / "qa.html"
+        if page.exists():
+            return FileResponse(str(page), media_type="text/html")
+        return {"error": "QA dashboard not found", "expected_path": str(page)}
 
     @app.get("/health")
     async def health():

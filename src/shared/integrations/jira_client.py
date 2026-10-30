@@ -178,6 +178,18 @@ Build contract management API for the commercial team.
             "jira_url": f"https://jira.company.local/browse/{issue_key}",
         }
 
+    async def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+        return {"issue_key": issue_key, "body": body[:200], "created": True, "id": "mock-comment-1"}
+
+    async def add_attachment(
+        self,
+        issue_key: str,
+        filepath: str,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        name = filename or filepath.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return {"issue_key": issue_key, "filename": name, "attached": True}
+
     async def test_connection(self) -> dict[str, Any]:
         return {"ok": True, "mode": "mock", "user": "mock-user", "auth_type": "mock"}
 
@@ -520,6 +532,30 @@ class RealJiraClient(JiraClientProtocol):
             "account_id": myself.get("accountId") or myself.get("key"),
             "email": myself.get("emailAddress"),
         }
+
+    def _add_comment_sync(self, issue_key: str, body: str) -> dict[str, Any]:
+        comment = self._client.add_comment(issue_key.upper(), body)
+        return {"id": getattr(comment, "id", None), "issue_key": issue_key.upper(), "created": True}
+
+    async def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+        return await run_sync(self._add_comment_sync, issue_key, body)
+
+    def _add_attachment_sync(self, issue_key: str, filepath: str, filename: str | None) -> dict[str, Any]:
+        result = self._client.add_attachment(issue=issue_key.upper(), attachment=filepath, filename=filename)
+        return {
+            "id": getattr(result, "id", None),
+            "filename": filename or filepath.rsplit("/", 1)[-1].rsplit("\\", 1)[-1],
+            "issue_key": issue_key.upper(),
+            "attached": True,
+        }
+
+    async def add_attachment(
+        self,
+        issue_key: str,
+        filepath: str,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        return await run_sync(self._add_attachment_sync, issue_key, filepath, filename)
 
     async def test_connection(self) -> dict[str, Any]:
         try:

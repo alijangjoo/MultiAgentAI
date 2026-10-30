@@ -1,5 +1,6 @@
 from core.config import get_settings
 from shared.cursor_cli.models import ReviewContext
+from shared.cursor_cli.rtk_compress import apply_rtk_to_review_context_fields
 from shared.models.domain import MergeRequestInfo
 from slices.knowledge.review_docs import get_review_docs_service
 from slices.knowledge.review_package import ReviewKnowledgePackage
@@ -25,9 +26,17 @@ def build_review_context(
     )
 
     docs = get_review_docs_service()
-    git_diff = docs.format_mr_diff(mr_changes)
+    git_diff_raw = docs.format_mr_diff(mr_changes)
     if not mr_changes and code_context and code_context.strip():
-        git_diff = f"{git_diff}\n\n## Extra code context\n{code_context[:4000]}"
+        git_diff_raw = f"{git_diff_raw}\n\n## Extra code context\n{code_context[:4000]}"
+
+    # Compress the GitLab MR diff text only. Never pass CURSOR_REPO_PATH here —
+    # `rtk git diff origin/target...HEAD` would use whatever is checked out locally,
+    # not the MR source branch (worktree path may re-apply RTK with the correct HEAD).
+    prompt_diff, scanner_diff, rtk_stats = apply_rtk_to_review_context_fields(
+        git_diff_raw,
+        settings=settings,
+    )
 
     specs_parts: list[str] = []
     review_rules: str | None = None
@@ -64,11 +73,15 @@ def build_review_context(
         extra_context["source_branch"] = mr.source_branch
     if mr.target_branch:
         extra_context["target_branch"] = mr.target_branch
+    if rtk_stats.method != "none":
+        extra_context["rtk_compression"] = rtk_stats.note
+        extra_context["rtk_stats"] = rtk_stats.to_dict()
 
     return ReviewContext(
         title=mr.title,
         description=development_summary.strip() or None,
-        git_diff=git_diff,
+        git_diff=prompt_diff,
+        git_diff_raw=scanner_diff,
         specs="\n\n".join(specs_parts).strip() or None,
         review_rules=review_rules,
         extra_context=extra_context or None,

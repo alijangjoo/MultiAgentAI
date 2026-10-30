@@ -386,13 +386,10 @@ def _model_attempts(
     primary = _resolve_review_model(settings, model)
     if use_review_skill:
         attempts: list[str | None] = []
-        if primary:
-            attempts.append(primary)
-        for fallback in ("auto", "composer-2.5-fast"):
-            if fallback not in attempts:
-                attempts.append(fallback)
-        attempts.append(None)
-        return attempts
+        for candidate in (primary, "composer-2.5-fast", "auto"):
+            if candidate and candidate not in attempts:
+                attempts.append(candidate)
+        return attempts[:2]
     attempts: list[str | None] = []
     if primary:
         attempts.append(primary)
@@ -425,20 +422,30 @@ def _review_attempt_plans(
     *,
     use_review_skill: bool = False,
 ) -> list[tuple[str | None, str | None]]:
-    """Mode/format attempts: configured first, then agent+json retry on placeholder."""
-    if use_review_skill:
-        return [
-            ("agent", "json"),
-            ("ask", "json"),
-            ("agent", "text"),
-        ]
-
+    """Mode/format attempts: configured review mode first, agent+json as fallback."""
     resolved_mode = _resolve_review_mode(settings, mode)
     resolved_fmt = _resolve_review_output_format(settings, output_format)
-    fmt = _resolve_review_output_format(settings, output_format)
-    plans: list[tuple[str | None, str | None]] = [(resolved_mode, fmt)]
+
+    if use_review_skill:
+        # Diff is embedded in the prompt; --workspace is usually off. Prefer the
+        # configured review mode (default agent) — ask-first doubled wall time and
+        # often returned placeholders that forced a second full CLI run.
+        plans: list[tuple[str | None, str | None]] = [(resolved_mode, "json")]
+        if resolved_mode != "agent":
+            plans.append(("agent", "json"))
+        if resolved_fmt != "text":
+            plans.append(("agent", "text"))
+        seen_skill: set[tuple[str | None, str | None]] = set()
+        unique_skill: list[tuple[str | None, str | None]] = []
+        for plan in plans:
+            if plan not in seen_skill:
+                seen_skill.add(plan)
+                unique_skill.append(plan)
+        return unique_skill
+
+    plans = [(resolved_mode, resolved_fmt)]
     if resolved_mode != "agent":
-        plans.append(("agent", fmt))
+        plans.append(("agent", resolved_fmt))
     if resolved_fmt != "json":
         plans.append(("agent", "json"))
     # Deduplicate while preserving order
@@ -463,7 +470,6 @@ def _execute_review(
 ) -> CursorCliResult:
     """Core runner — ported from CursorReviewAgent with argv embedding + model retry."""
     cli_bin = resolve_cursor_cli_bin(settings.cursor_cli_bin)
-    timeout = timeout_seconds or settings.cursor_cli_timeout_seconds
     env = _build_env(settings)
 
     last_result: _CliRunResult | None = None
@@ -472,10 +478,26 @@ def _execute_review(
     attempt_plans = _review_attempt_plans(
         settings, mode, output_format, use_review_skill=skill_mode
     )
+    review_timeout = (
+        timeout_seconds
+        or settings.cursor_cli_review_timeout_seconds
+        or settings.cursor_cli_timeout_seconds
+    )
+
+    skill_attempts = 0
+    max_skill_attempts = 4
+    stop_attempts = False
 
     for attempt_model in _model_attempts(settings, model, use_review_skill=skill_mode):
+        if stop_attempts:
+            break
         review_workspace = _resolve_workspace(settings, workspace)
         for attempt_mode, attempt_fmt in attempt_plans:
+            if skill_mode:
+                skill_attempts += 1
+                if skill_attempts > max_skill_attempts:
+                    stop_attempts = True
+                    break
             base_cmd = _build_command_base(
                 cli_bin=cli_bin,
                 settings=settings,
@@ -495,7 +517,7 @@ def _execute_review(
                 )
                 last_prompt = prompt
             cmd = [*base_cmd, prompt]
-            result = _run_subprocess(cmd, env=env, timeout=timeout)
+            result = _run_subprocess(cmd, env=env, timeout=review_timeout)
             last_result = result
             if result.returncode == 0 and (result.stdout or "").strip():
                 if not _is_placeholder_stdout(result.stdout):
@@ -526,7 +548,7 @@ def _execute_review(
 
     stdout = last_result.stdout or ""
     if is_empty_shell_stdout(stdout) or not stdout.strip():
-        fallback = scan_diff_for_review(context.git_diff)
+        fallback = scan_diff_for_review(context.git_diff_raw or context.git_diff)
         if fallback.get("findings") or fallback.get("suggestions"):
             fallback_note = "[fallback] deterministic diff rule scan (Cursor CLI empty JSON)\n"
             return CursorCliResult(
@@ -585,4 +607,69 @@ def run_cursor_review_request(
         output_format=request.output_format,
         mode=request.mode,
         timeout_seconds=request.timeout_seconds,
+    )
+
+
+def run_cursor_prompt(
+    prompt: str,
+    settings: Settings | None = None,
+    *,
+    model: str | None = None,
+    workspace: str | None = None,
+    output_format: str | None = "json",
+    mode: str | None = None,
+    timeout_seconds: int | None = None,
+) -> CursorCliResult:
+    """Run Cursor CLI with a plain prompt (QA and other non-review flows)."""
+    cfg = settings or get_settings()
+    cli_bin = resolve_cursor_cli_bin(cfg.cursor_cli_bin)
+    env = _build_env(cfg)
+    review_timeout = (
+        timeout_seconds
+        or cfg.cursor_cli_review_timeout_seconds
+        or cfg.cursor_cli_timeout_seconds
+    )
+    resolved_mode = _resolve_review_mode(cfg, mode)
+    resolved_fmt = _resolve_review_output_format(cfg, output_format)
+    review_workspace = _resolve_workspace(cfg, workspace)
+
+    last_result: _CliRunResult | None = None
+    last_prompt = prompt
+
+    for attempt_model in _model_attempts(cfg, model, use_review_skill=False):
+        base_cmd = _build_command_base(
+            cli_bin=cli_bin,
+            settings=cfg,
+            model=attempt_model,
+            workspace=review_workspace,
+            output_format=resolved_fmt,
+            mode=resolved_mode,
+        )
+        text = prompt
+        if not _prompt_fits_argv(base_cmd, text):
+            max_chars = _max_prompt_chars(base_cmd)
+            text = text[:max_chars] + f"\n\n… [prompt truncated at {max_chars} chars]"
+        last_prompt = text
+        cmd = [*base_cmd, text]
+        result = _run_subprocess(cmd, env=env, timeout=review_timeout)
+        last_result = result
+        if result.returncode == 0 and (result.stdout or "").strip():
+            return CursorCliResult(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                command=cmd,
+                prompt_chars=len(last_prompt),
+                timed_out=result.timed_out,
+            )
+
+    if last_result is None:
+        raise CursorCliError("Cursor CLI could not be started for QA prompt")
+    return CursorCliResult(
+        returncode=last_result.returncode,
+        stdout=last_result.stdout,
+        stderr=last_result.stderr,
+        command=[],
+        prompt_chars=len(last_prompt),
+        timed_out=last_result.timed_out,
     )
