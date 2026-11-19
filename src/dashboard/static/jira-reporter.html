@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jira Reporter Agent — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="panel">
+      <div class="panel-header">
+        <span>Jira Reporter Agent</span>
+        <div class="toolbar">
+          <button type="button" id="refresh">Refresh report</button>
+        </div>
+      </div>
+      <div class="panel-body padded" id="report-status">Reading Ven Board…</div>
+    </div>
+
+    <div class="panels-3">
+      <div class="panel">
+        <div class="panel-header"><span>Verdict</span></div>
+        <div class="panel-body padded" id="verdict"><div class="empty-state">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Sprint</span></div>
+        <div class="panel-body padded" id="sprint"><div class="empty-state">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Members</span></div>
+        <div class="panel-body" id="people"><div class="empty-state">—</div></div>
+      </div>
+    </div>
+
+    <div class="panels-2">
+      <div class="panel">
+        <div class="panel-header"><span>WIP older than two workdays</span></div>
+        <div class="panel-body" id="stale"><div class="empty-state">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Skipped Code Review</span></div>
+        <div class="panel-body" id="skips"><div class="empty-state">—</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-header"><span>Extra WIP exception</span></div>
+      <div class="panel-body padded">
+        <div class="toolbar">
+          <select id="ex-person">
+            <option value="omid">AlaBeigi, Omid</option>
+            <option value="kambiz">Babaei, Kambiz</option>
+            <option value="ali">Jangjoo, Ali</option>
+          </select>
+          <input id="ex-until" type="date" />
+          <input id="ex-keys" type="text" placeholder="VEN-101, VEN-118" />
+          <input id="ex-reason" type="text" placeholder="Reason" />
+          <button type="button" id="ex-save">Save exception</button>
+        </div>
+        <div id="exceptions" class="meta" style="margin-top:0.75rem"></div>
+      </div>
+    </div>
+  </main>
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Jira Reporter Agent', 'Ven Board · Code Review flow and one WIP', 'jira-reporter');
+    const API = Dashboard.API;
+
+    function badge(verdict) {
+      const kind = verdict === 'Healthy' ? 'success' : (verdict === 'Unhealthy' ? 'failed' : 'pending');
+      return `<span class="badge ${kind}">${Dashboard.escapeHtml(verdict || '')}</span>`;
+    }
+
+    function renderReport(data) {
+      const reasons = (data.reasons || []).map(item => `<div>${Dashboard.escapeHtml(item)}</div>`).join('');
+      const questions = (data.questions || []).map(item => `<li>${Dashboard.escapeHtml(item)}</li>`).join('');
+      const notes = (data.footnotes || []).map(item => `<div class="meta">${Dashboard.escapeHtml(item)}</div>`).join('');
+      document.getElementById('verdict').innerHTML = `
+        <div style="font-size:1.4rem;font-weight:700">${badge(data.verdict)} <span style="margin-right:0.5rem">${data.score}</span></div>
+        <div class="meta" style="margin-top:0.5rem">${reasons}</div>
+        ${questions ? `<ol style="margin:0.75rem 1rem 0">${questions}</ol>` : ''}
+        ${notes}`;
+
+      const sprint = data.sprint || {};
+      const counts = sprint.counts || {};
+      const assumed = sprint.assumed || {};
+      const forecast = sprint.forecast || {};
+      const oldest = sprint.oldest_wip;
+      document.getElementById('sprint').innerHTML = `
+        <strong>${Dashboard.escapeHtml(assumed.name || 'No active sprint')}</strong>
+        <div class="meta">To Do ${counts.todo || 0} · In Progress ${counts.in_progress || 0} · Code Review ${counts.code_review || 0} · Done ${counts.done || 0}</div>
+        <div class="meta">Done ${sprint.done_percent ?? '—'}% · Workdays elapsed ${sprint.elapsed_percent ?? '—'}%</div>
+        <div class="meta">Added after start: ${sprint.added_after_start || 0}</div>
+        <div class="meta">${oldest ? `Oldest WIP: ${Dashboard.escapeHtml(oldest.key)} (${oldest.age_days ?? '?'} workdays)` : 'No open WIP to compare'}</div>
+        <div class="meta">${forecast.weak ? 'Forecast is weak: no Done transitions in the last three workdays.' : `At the recent pace, about ${forecast.still_open_forecast} items stay open at the end.`}</div>`;
+
+      const people = data.people || [];
+      document.getElementById('people').innerHTML = people.map(person => {
+        const rows = (person.wip || []).map(item =>
+          `<div class="meta">${Dashboard.escapeHtml(item.key)} · ${Dashboard.escapeHtml(item.summary)} · ${item.age_days ?? '?'} workdays</div>`
+        ).join('') || '<div class="meta">No WIP</div>';
+        return `<div class="list-item"><strong>${Dashboard.escapeHtml(person.name)}</strong> · ${person.wip_count} WIP<div class="meta">${Dashboard.escapeHtml(person.next_step || '')}</div>${rows}</div>`;
+      }).join('');
+
+      const stale = data.stale || [];
+      document.getElementById('stale').innerHTML = stale.length ? stale.map(item =>
+        `<div class="list-item"><strong>${Dashboard.escapeHtml(item.key)}</strong> ${Dashboard.escapeHtml(item.assignee)}<div class="meta">${item.age_days} workdays · ${Dashboard.escapeHtml(item.summary)}</div></div>`
+      ).join('') : '<div class="empty-state">No stale WIP</div>';
+
+      const skips = data.skips || [];
+      document.getElementById('skips').innerHTML = skips.length ? skips.map(item =>
+        `<div class="list-item"><strong>${Dashboard.escapeHtml(item.key)}</strong> ${Dashboard.escapeHtml(item.assignee)}<div class="meta">${Dashboard.escapeHtml(item.detail)}</div></div>`
+      ).join('') : '<div class="empty-state">No Code Review skips</div>';
+      document.getElementById('report-status').textContent =
+        `${data.board_name || 'Ven Board'} · ${data.today || ''} · Rules 4 and 5`;
+    }
+
+    async function loadReport() {
+      const res = await fetch(`${API}/api/v1/jira-reporter/report`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Could not load the report');
+      renderReport(data);
+    }
+
+    async function loadExceptions() {
+      const res = await fetch(`${API}/api/v1/jira-reporter/exceptions`);
+      const data = await res.json();
+      const items = data.items || [];
+      const el = document.getElementById('exceptions');
+      el.innerHTML = items.length ? items.map(item =>
+        `<div>${Dashboard.escapeHtml(item.person_id)} until ${Dashboard.escapeHtml(item.until)} · ${Dashboard.escapeHtml((item.keys || []).join(', '))} · ${Dashboard.escapeHtml(item.reason || '')}
+          <button type="button" class="secondary" data-delete="${Dashboard.escapeHtml(item.id)}">Remove</button></div>`
+      ).join('') : 'No active exception.';
+    }
+
+    document.getElementById('refresh').addEventListener('click', () => {
+      loadReport().catch(showError);
+    });
+    document.getElementById('ex-save').addEventListener('click', async () => {
+      const keys = document.getElementById('ex-keys').value.split(/[,\s]+/).filter(Boolean);
+      const res = await fetch(`${API}/api/v1/jira-reporter/exceptions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          person_id: document.getElementById('ex-person').value,
+          until: document.getElementById('ex-until').value,
+          reason: document.getElementById('ex-reason').value,
+          keys,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.detail || 'Could not save');
+        return;
+      }
+      await loadExceptions();
+      await loadReport();
+    });
+    document.getElementById('exceptions').addEventListener('click', async (event) => {
+      const btn = event.target.closest('[data-delete]');
+      if (!btn) return;
+      await fetch(`${API}/api/v1/jira-reporter/exceptions/${encodeURIComponent(btn.dataset.delete)}`, { method: 'DELETE' });
+      await loadExceptions();
+      await loadReport();
+    });
+
+    function showError(err) {
+      document.getElementById('report-status').textContent = err.message || String(err);
+    }
+
+    loadExceptions().catch(showError);
+    loadReport().catch(showError);
+  </script>
+</body>
+</html>

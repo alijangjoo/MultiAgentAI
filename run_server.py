@@ -1,5 +1,6 @@
 """Run the AgentFramework API server from the project root."""
 
+import os
 from pathlib import Path
 
 import uvicorn
@@ -17,7 +18,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         app_dir="src",
-        host="127.0.0.1",
-        port=8080,
+        host=os.environ.get("API_HOST", "127.0.0.1"),
+        port=int(os.environ.get("API_PORT", "8000")),
         reload=True,
     )

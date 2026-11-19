@@ -18,6 +18,8 @@ from api.routes.gitlab_webhooks import router as gitlab_webhooks_router
 from api.routes.jira_tasks import router as jira_tasks_router
 from api.routes.knowledge import router as knowledge_router
 from api.routes.product_manager import router as product_manager_router
+from api.routes.channel_alerts import router as channel_alerts_router
+from api.routes.jira_reporter import router as jira_reporter_router
 from api.routes.qa import router as qa_router
 from api.routes.rtk import router as rtk_router
 from core.config import get_settings
@@ -75,6 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(product_manager_router)
     app.include_router(rtk_router)
     app.include_router(qa_router)
+    app.include_router(channel_alerts_router)
+    app.include_router(jira_reporter_router)
     app.include_router(ws_router)
 
     if DASHBOARD_DIR.exists():
@@ -155,6 +159,20 @@ def create_app() -> FastAPI:
         if page.exists():
             return FileResponse(str(page), media_type="text/html")
         return {"error": "RTK dashboard not found", "expected_path": str(page)}
+
+    @app.get("/dashboard/channel-alerts", include_in_schema=False)
+    async def channel_alerts_dashboard():
+        page = DASHBOARD_DIR / "channel-alerts.html"
+        if page.exists():
+            return FileResponse(str(page), media_type="text/html")
+        return {"error": "Disaster & Bugs dashboard not found", "expected_path": str(page)}
+
+    @app.get("/dashboard/jira-reporter", include_in_schema=False)
+    async def jira_reporter_dashboard():
+        page = DASHBOARD_DIR / "jira-reporter.html"
+        if page.exists():
+            return FileResponse(str(page), media_type="text/html")
+        return {"error": "Jira Reporter dashboard not found", "expected_path": str(page)}
 
     @app.get("/dashboard/qa", include_in_schema=False)
     async def qa_dashboard():

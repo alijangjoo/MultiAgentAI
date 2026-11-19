@@ -104,3 +104,25 @@ class DeployRequestRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class ChannelAlertRecord(Base):
+    """Mattermost Disaster / Bugs message ingested for vendor classification."""
+
+    __tablename__ = "channel_alerts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    list_name: Mapped[str] = mapped_column(String(20), index=True)
+    channel_id: Mapped[str] = mapped_column(String(64), default="")
+    channel_name: Mapped[str] = mapped_column(String(200), default="")
+    user_name: Mapped[str] = mapped_column(String(200), default="")
+    text: Mapped[str] = mapped_column(Text)
+    vendor_related: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    vendor_name: Mapped[str] = mapped_column(String(200), default="")
+    vendor_reason: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    classifier: Mapped[str] = mapped_column(String(30), default="")
+    classification_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    knowledge_hits: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

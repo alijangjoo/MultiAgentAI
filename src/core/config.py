@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     mattermost_url: str = ""
     mattermost_token: str = ""
     mattermost_disaster_channel_id: str = ""
+    mattermost_bugs_channel_id: str = ""
+    mattermost_disaster_channel_name: str = "disaster"
+    mattermost_bugs_channel_name: str = "bugs"
+    channel_alert_webhook_secret: str = ""
+    # ollama | cursor_cli — dashboard store overrides this after a save
+    incident_classifier: str = "ollama"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_classifier_model: str = "llama3.2:3b"
     mattermost_deploy_webhook_url: str = (
         "https://chat.tapsi.food/hooks/n5j5cbj6jjr6jym4utreujr5da"
     )

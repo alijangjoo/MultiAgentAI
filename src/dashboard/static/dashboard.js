@@ -15,6 +15,8 @@ Dashboard.NAV_ITEMS = [
   { href: '/dashboard/qa', label: 'QA Agent', page: 'qa' },
   { href: '/dashboard/pipelines', label: 'Pipelines', page: 'pipelines' },
   { href: '/dashboard/deploy-requests', label: 'Deploy Request', page: 'deploy-requests' },
+  { href: '/dashboard/channel-alerts', label: 'Disaster & Bugs', page: 'channel-alerts' },
+  { href: '/dashboard/jira-reporter', label: 'Jira Reporter Agent', page: 'jira-reporter' },
   { href: '/dashboard/knowledge', label: 'Knowledge Agent', page: 'knowledge' },
   { href: '/dashboard/rtk', label: 'RTK Savings', page: 'rtk' },
 ];

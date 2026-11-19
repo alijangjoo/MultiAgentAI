@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Disaster &amp; Bugs — AgentFramework</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app-header"></div>
+  <main>
+    <div class="panel">
+      <div class="panel-header">
+        <span>Disaster &amp; Bugs</span>
+        <div class="toolbar">
+          <label class="meta" for="classifier">Classifier</label>
+          <select id="classifier">
+            <option value="ollama">Ollama</option>
+            <option value="cursor_cli">Cursor CLI</option>
+          </select>
+          <label class="meta" for="ollama-model">Ollama model</label>
+          <select id="ollama-model"></select>
+          <button type="button" id="save-settings">Save</button>
+          <button type="button" class="secondary" id="recheck-open">بررسی غیروندورها</button>
+          <button type="button" class="secondary" id="refresh">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body padded">
+        <div class="meta" id="settings-status">Loading classifier settings…</div>
+        <div class="meta" style="margin-top:0.35rem">
+          Webhook: <code id="webhook-url">/api/v1/channel-alerts/webhook</code>
+          — Mattermost outgoing webhook or the Grok Bot automation posts each Disaster and Bugs message here.
+          پیام‌هایی که خودشان «وندور» یا کد وندور دارند حتی اگر Knowledge صفحه‌ای برای آن کد نداشته باشد بررسی می‌شوند. روی هر پیام می‌توان بررسی دوباره یا ثبت دستی زد.
+        </div>
+      </div>
+    </div>
+
+    <div class="panels-3">
+      <div class="panel">
+        <div class="panel-header"><span>Disaster</span><span class="meta" id="count-disaster"></span></div>
+        <div class="panel-body" id="list-disaster"><div class="empty-state">Loading…</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Bugs</span><span class="meta" id="count-bugs"></span></div>
+        <div class="panel-body" id="list-bugs"><div class="empty-state">Loading…</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Vendor</span><span class="meta" id="count-vendor"></span></div>
+        <div class="panel-body" id="list-vendor"><div class="empty-state">Loading…</div></div>
+      </div>
+    </div>
+  </main>
+  <script src="/static/dashboard.js"></script>
+  <script>
+    Dashboard.mountHeader('app-header', 'Disaster & Bugs', 'Mattermost Disaster, Bugs, and vendor messages', 'channel-alerts');
+    const API = Dashboard.API;
+
+    function renderList(kind, items) {
+      const el = document.getElementById('list-' + kind);
+      const count = document.getElementById('count-' + kind);
+      if (count) count.textContent = items.length ? String(items.length) : '';
+      if (!items.length) {
+        el.innerHTML = '<div class="empty-state">No messages yet</div>';
+        return;
+      }
+      el.innerHTML = items.map(item => {
+        const vendor = item.vendor_related
+          ? `<span class="badge waiting_hitl">${Dashboard.escapeHtml(item.vendor_name || 'vendor')}</span>`
+          : '';
+        const status = item.classification_status === 'pending'
+          ? '<span class="badge pending">classifying</span>'
+          : (item.classification_status === 'failed' ? '<span class="badge failed">classify failed</span>' : '');
+        const reason = item.vendor_reason
+          ? `<div class="meta">${Dashboard.escapeHtml(item.vendor_reason)}</div>`
+          : '';
+        const who = item.user_name || 'unknown';
+        const when = item.created_at ? item.created_at.replace('T', ' ').slice(0, 16) : '';
+        const manual = item.vendor_related
+          ? `<button type="button" class="secondary" data-action="manual-clear" data-id="${Dashboard.escapeHtml(item.id)}">وندور نیست</button>`
+          : `<button type="button" class="secondary" data-action="manual-vendor" data-id="${Dashboard.escapeHtml(item.id)}">ثبت وندور</button>`;
+        return `<div class="list-item">
+          <div class="toolbar" style="justify-content:space-between">
+            <strong>${Dashboard.escapeHtml(who)}</strong>
+            <span>${vendor} ${status}</span>
+          </div>
+          <div class="task-summary">${Dashboard.escapeHtml(item.text)}</div>
+          ${reason}
+          <div class="meta">${Dashboard.escapeHtml(item.channel_name || item.list_name)} · ${Dashboard.escapeHtml(when)} · ${Dashboard.escapeHtml(item.classifier || '')}</div>
+          <div class="toolbar" style="margin-top:0.5rem">
+            <button type="button" class="secondary" data-action="recheck" data-id="${Dashboard.escapeHtml(item.id)}">بررسی دوباره</button>
+            ${manual}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function loadKind(kind) {
+      const res = await fetch(`${API}/api/v1/channel-alerts?kind=${encodeURIComponent(kind)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to load ' + kind);
+      renderList(kind, data.items || []);
+    }
+
+    async function loadAll() {
+      await Promise.all([loadKind('disaster'), loadKind('bugs'), loadKind('vendor')]);
+    }
+
+    async function loadSettings() {
+      const res = await fetch(`${API}/api/v1/channel-alerts/settings`);
+      const data = await res.json();
+      const modelSelect = document.getElementById('ollama-model');
+      const models = data.ollama_models || [];
+      modelSelect.innerHTML = models.map(model =>
+        `<option value="${Dashboard.escapeHtml(model)}">${Dashboard.escapeHtml(model)}</option>`
+      ).join('');
+      if (data.ollama_model && !models.includes(data.ollama_model)) {
+        modelSelect.insertAdjacentHTML('beforeend', `<option value="${Dashboard.escapeHtml(data.ollama_model)}">${Dashboard.escapeHtml(data.ollama_model)}</option>`);
+      }
+      document.getElementById('classifier').value = data.classifier || 'ollama';
+      modelSelect.value = data.ollama_model || 'llama3.2:3b';
+      document.getElementById('webhook-url').textContent = `${API}${data.webhook_path || '/api/v1/channel-alerts/webhook'}`;
+      syncModelState();
+      document.getElementById('settings-status').textContent =
+        data.classifier === 'cursor_cli'
+          ? 'تشخیص وندور با Cursor CLI است. کد وندور داخل متن کافی است؛ Knowledge فقط نام را دقیق‌تر می‌کند.'
+          : `تشخیص وندور با Ollama و مدل ${data.ollama_model} است. کد وندور داخل متن کافی است.`;
+    }
+
+    function syncModelState() {
+      const usingOllama = document.getElementById('classifier').value === 'ollama';
+      document.getElementById('ollama-model').disabled = !usingOllama;
+    }
+
+    document.getElementById('classifier').addEventListener('change', syncModelState);
+    document.getElementById('refresh').addEventListener('click', () => loadAll().catch(showError));
+    document.getElementById('recheck-open').addEventListener('click', async () => {
+      const res = await fetch(`${API}/api/v1/channel-alerts/recheck`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.detail || 'Recheck failed');
+        return;
+      }
+      document.getElementById('settings-status').textContent = `${data.queued || 0} پیام برای بررسی دوباره در صف است.`;
+      await loadAll();
+    });
+    document.addEventListener('click', async (event) => {
+      const btn = event.target.closest('[data-action]');
+      if (!btn || !btn.dataset.id) return;
+      const id = btn.dataset.id;
+      btn.disabled = true;
+      try {
+        if (btn.dataset.action === 'recheck') {
+          const res = await fetch(`${API}/api/v1/channel-alerts/${encodeURIComponent(id)}/recheck`, { method: 'POST' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Recheck failed');
+        } else if (btn.dataset.action === 'manual-vendor') {
+          const name = window.prompt('نام یا کد وندور', '');
+          if (name === null) return;
+          const res = await fetch(`${API}/api/v1/channel-alerts/${encodeURIComponent(id)}/manual`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vendor_related: true, vendor_name: name, reason: 'بررسی دستی' }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Manual review failed');
+        } else if (btn.dataset.action === 'manual-clear') {
+          const res = await fetch(`${API}/api/v1/channel-alerts/${encodeURIComponent(id)}/manual`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vendor_related: false, reason: 'بررسی دستی: وندور نیست' }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Manual review failed');
+        }
+        await loadAll();
+      } catch (err) {
+        showError(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('save-settings').addEventListener('click', async () => {
+      const body = {
+        classifier: document.getElementById('classifier').value,
+        ollama_model: document.getElementById('ollama-model').value,
+      };
+      const res = await fetch(`${API}/api/v1/channel-alerts/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.detail || 'Save failed');
+        return;
+      }
+      await loadSettings();
+    });
+
+    function showError(err) {
+      document.getElementById('settings-status').textContent = err.message || String(err);
+    }
+
+    loadSettings().catch(showError);
+    loadAll().catch(showError);
+    setInterval(() => loadAll().catch(() => {}), 8000);
+  </script>
+</body>
+</html>
